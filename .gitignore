@@ -1,0 +1,11 @@
+.env
+eval_results.json
+temp_*.pdf
+__pycache__/
+*.pdf
+*.xlsx
+*.pptx
+.idea/
+test.py
+*.pkl
+chroma_doctrine_db/
