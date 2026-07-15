@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from sentence_transformers import SentenceTransformer, CrossEncoder
+from rank_bm25 import BM25Okapi  # Added to rebuild BM25 when new PDFs are uploaded
 import chromadb
 import pickle
 import smtplib
@@ -29,6 +30,7 @@ model_reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 db_client = chromadb.PersistentClient(path="./chroma_doctrine_db")
 collection = db_client.get_or_create_collection(name="bible_doctrine_v3")
 
+
 def expand_question(question):
     expansions = {
         "péché": "péché transgression loi Satan mort 1 Jean 3.4",
@@ -44,6 +46,8 @@ def expand_question(question):
         if keyword in question.lower():
             return question + " " + expansion
     return question
+
+
 def extract_claims(text):
     prompt = f"""
     Read the following theological document and extract 
@@ -64,11 +68,17 @@ def extract_claims(text):
         )
     )
     return response.text
+
+
 def validate_document(path):
+    # Safe text extraction from PDF
     newdoc = PdfReader(path)
-    text = ""
+    text_parts = []
     for page in newdoc.pages:
-        text += page.extract_text()
+        page_text = page.extract_text()
+        if page_text:
+            text_parts.append(page_text)
+    text = "\n".join(text_parts)
 
     ext_claims = extract_claims(text)
 
@@ -106,9 +116,13 @@ def validate_document(path):
         )
     )
     return response.text
+
+
 def send_notification_email(document_name, validation_report):
     sender = os.getenv("GMAIL_ADDRESS")
     password = os.getenv("GMAIL_APP_PASSWORD")
+
+    # Safe Fallback: Look for ADMIN_EMAIL (you) first. If not set, use FATHER_EMAIL.
     receiver = os.getenv("FATHER_EMAIL")
 
     # Build the email
@@ -142,15 +156,22 @@ L'Assistant Doctrinal
         server.sendmail(sender, receiver, msg.as_string())
 
     print(f"Email sent to {receiver}")
-def add_to_collection(path):
-    # Extract text
-    newdoc = PdfReader(path)
-    text = ""
-    for page in newdoc.pages:
-        text += page.extract_text()
 
-    # Chunk using same strategy as index.py
-    lines = [p.strip() for p in text.split("\n") if len(p.strip()) > 30]
+
+def add_to_collection(path):
+    global chunks, bm25  # Access global instances to update memory in place
+
+    # Safe text extraction from PDF
+    newdoc = PdfReader(path)
+    text_parts = []
+    for page in newdoc.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text_parts.append(page_text)
+    text = "\n".join(text_parts)
+
+    # Chunk using same safe strategy as index.py (Keep short verses!)
+    lines = [p.strip() for p in text.split("\n") if len(p.strip()) > 0]
     new_chunks = []
     for i in range(0, len(lines), 2):
         chunk = " ".join(lines[i:i + 3])
@@ -161,8 +182,8 @@ def add_to_collection(path):
     start_id = len(chunks)
     new_ids = [f"id_{start_id + i}" for i in range(len(new_chunks))]
 
-    # Embed and add to ChromaDB in batches
-    batch_size = 500
+    # Embed and add to ChromaDB in smaller batches (Safer for Streamlit RAM limits)
+    batch_size = 256
     for i in range(0, len(new_chunks), batch_size):
         batch_chunks = new_chunks[i:i + batch_size]
         batch_ids = new_ids[i:i + batch_size]
@@ -173,15 +194,21 @@ def add_to_collection(path):
             documents=batch_chunks
         )
 
-    # Update chunks and bm25 in memory
+    # Update chunks and completely rebuild the BM25 index
     chunks.extend(new_chunks)
+    tokenized_chunks = [chunk.lower().split() for chunk in chunks]
+    bm25 = BM25Okapi(tokenized_chunks)
 
-    # Save updated chunks to disk
+    # Save both updated files safely to disk
     with open("chunks_doctrine.pkl", "wb") as pkl_file:
         pickle.dump(chunks, pkl_file)
 
-    print(f"Added {len(new_chunks)} new chunks from {path}")
+    with open("bm25_doctrine.pkl", "wb") as pkl_file:
+        pickle.dump(bm25, pkl_file)
+
+    print(f"Added {len(new_chunks)} new chunks from {path} and updated BM25 index.")
     return len(new_chunks)
+
 
 def ai_search(question):
     expanded = expand_question(question)
@@ -261,6 +288,7 @@ def ai_search(question):
         )
     )
     return response.text
+
 
 if __name__ == "__main__":
     answer = ai_search("Quelle sont les souillures les plus graves ? Et comment les éviter ?")

@@ -9,21 +9,25 @@ from sentence_transformers import SentenceTransformer
 import openpyxl
 import pickle
 
-# PDF extraction
+# PDF extraction - Safe from NoneType and memory friendly
 bible_merge = PdfReader("MERGE_BIBLE_DOCTRINE.pdf")
-text = ""
+text_parts = []
 for page in bible_merge.pages:
-    text += page.extract_text()
+    page_text = page.extract_text()
+    if page_text:  # Prevents crashing if a page fails to return text
+        text_parts.append(page_text)
+text = "\n".join(text_parts)
 
-# Improved chunking — lower filter + sliding window
+# Improved chunking — Keep short lines (>0) so short Bible verses are preserved!
 pg = text.split("\n")
-lines = [p.strip() for p in pg if len(p.strip()) > 30]
+lines = [p.strip() for p in pg if len(p.strip()) > 0]
 
 chunks = []
 for i in range(0, len(lines), 2):
     chunk = " ".join(lines[i:i+3])
     if len(chunk) > 50:
         chunks.append(chunk)
+
 # Remove question list chunks
 chunks = [c for c in chunks if "quels sont les différents" not in c.lower()
           or len(c) > 300]
@@ -82,9 +86,9 @@ if collection.count() == 0:
 
 # Save to disk
 with open("chunks_doctrine.pkl", "wb") as f:
-    pickle.dump(chunks,f)
+    pickle.dump(chunks, f)
 
 with open("bm25_doctrine.pkl", "wb") as f:
-    pickle.dump(bm25,f)
+    pickle.dump(bm25, f)
 
 print("Indexing complete.")
