@@ -57,16 +57,24 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ============================================================
-# CUSTOM CSS STYLING
+# CUSTOM CSS STYLING (Now 100% Responsive for Mobile & Desktop)
 # ============================================================
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Inter:wght@300;400;500&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght=400;700;900&family=Inter:wght=300;400;500&display=swap');
 
     .stApp { background-color: #080d1a; color: #f0ece0; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
+
+    /* Wrapper sections to handle responsive paddings */
+    .hero-section {
+        padding: 4rem 2rem 2rem 2rem;
+    }
+    .input-section {
+        padding: 4rem 2rem 2rem 2rem;
+    }
 
     .eyebrow {
         font-family: 'Inter', sans-serif;
@@ -117,6 +125,7 @@ st.markdown("""
         margin: 2rem 0;
     }
 
+    /* Grid configuration for desktop */
     .features {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
@@ -239,6 +248,40 @@ st.markdown("""
         border-top: 1px solid #1a2540;
         margin: 1rem 0 1.5rem 0;
     }
+
+    /* ============================================================
+       MOBILE INTERFACE ADJUSTMENTS (Screens under 768px)
+       ============================================================ */
+    @media (max-width: 768px) {
+        .hero-section {
+            padding: 2rem 1rem 1rem 1rem !important;
+        }
+        .input-section {
+            padding: 1.5rem 1rem 1.5rem 1rem !important;
+        }
+        .hero-title {
+            font-size: clamp(1.8rem, 8vw, 2.3rem) !important;
+            margin-bottom: 1rem !important;
+        }
+        .hero-subtitle {
+            font-size: 0.85rem !important;
+            line-height: 1.6 !important;
+            margin-bottom: 1.5rem !important;
+        }
+        .features {
+            grid-template-columns: 1fr !important; /* Stack cards vertically */
+            gap: 1rem !important;
+            padding: 1rem 0 !important;
+        }
+        .feature-card {
+            padding: 1.25rem !important;
+        }
+        .answer-card {
+            padding: 1.25rem !important;
+            font-size: 0.85rem !important;
+            line-height: 1.7 !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -249,7 +292,7 @@ col_left, col_right = st.columns([1, 1], gap="large")
 
 with col_left:
     st.markdown("""
-    <div style="padding: 4rem 2rem 2rem 2rem;">
+    <div class="hero-section">
         <div class="eyebrow">Assistant Biblique IA</div>
         <h1 class="hero-title">
             Discernement<br>
@@ -284,9 +327,9 @@ with col_left:
 
 with col_right:
     st.markdown("""
-    <div style="padding: 4rem 2rem 2rem 2rem;">
+    <div class="input-section">
         <div style="font-family: Inter, sans-serif; font-size: 0.7rem; letter-spacing: 0.2em; text-transform: uppercase; color: #c9a84c; margin-bottom: 0.5rem;">
-            Question doctrinale
+            Question doctrinal
         </div>
         <div style="font-family: Playfair Display, Georgia, serif; font-size: 1.4rem; color: #f0ece0; margin-bottom: 0.5rem;">
             Commencez ici
