@@ -1,5 +1,52 @@
 import streamlit as st
 import os
+import zipfile
+import requests
+
+# 1. Streamlit Page Configuration (Must be the very first Streamlit command)
+st.set_page_config(
+    page_title="Assistant Doctrinal",
+    page_icon="✝️",
+    layout="wide"
+)
+
+# 2. Database Bootstrap Constants
+DB_ZIP = "doctrine_db.zip"
+DB_FOLDER = "chroma_doctrine_db"
+CHUNKS_FILE = "chunks_doctrine.pkl"
+BM25_FILE = "bm25_doctrine.pkl"
+DB_DOWNLOAD_URL = "https://github.com/akirem20/Bible_ai_project/releases/download/v1.0.0/doctrine_db.zip"
+
+
+@st.cache_resource
+def bootstrap_database():
+    """Télécharge et extrait les fichiers de la base de données s'ils sont manquants sur le serveur Streamlit."""
+    if not (os.path.exists(DB_FOLDER) and os.path.exists(CHUNKS_FILE) and os.path.exists(BM25_FILE)):
+        with st.spinner(
+                "⚡ Configuration de l'application : Restauration de la base de données doctrinale (~10 secondes)..."):
+            headers = {}
+            if "GITHUB_TOKEN" in st.secrets:
+                headers["Authorization"] = f"token {st.secrets['GITHUB_TOKEN']}"
+
+            response = requests.get(DB_DOWNLOAD_URL, headers=headers, stream=True)
+            if response.status_code == 200:
+                with open(DB_ZIP, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+
+                with zipfile.ZipFile(DB_ZIP, 'r') as zip_ref:
+                    zip_ref.extractall(".")
+
+                os.remove(DB_ZIP)
+            else:
+                st.error(f"Échec du téléchargement de la base de données. Code statut: {response.status_code}")
+                st.stop()
+
+
+# 3. Run the bootstrap BEFORE importing local RAG modules to prevent FileNotFoundError
+bootstrap_database()
+
+# 4. Import local assets and standard library dependencies safely
 from main import ai_search, validate_document, add_to_collection, send_notification_email
 import random
 import smtplib
@@ -9,12 +56,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-st.set_page_config(
-    page_title="Assistant Doctrinal",
-    page_icon="✝️",
-    layout="wide"
-)
-
+# ============================================================
+# CUSTOM CSS STYLING
+# ============================================================
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Inter:wght@300;400;500&display=swap');
@@ -332,7 +376,8 @@ with col_right:
                     msg["From"] = sender
                     msg["To"] = receiver
                     msg["Subject"] = "Code de connexion — Assistant Doctrinal"
-                    msg.attach(MIMEText(f"Bonjour,\n\nVotre code : {code}\n\nCordialement,\nL'Assistant Doctrinal", "plain"))
+                    msg.attach(
+                        MIMEText(f"Bonjour,\n\nVotre code : {code}\n\nCordialement,\nL'Assistant Doctrinal", "plain"))
                     with smtplib.SMTP("smtp.gmail.com", 587) as server:
                         server.starttls()
                         server.login(sender, password)
@@ -385,7 +430,9 @@ with col_right:
                                 msg["From"] = sender
                                 msg["To"] = receiver
                                 msg["Subject"] = f"Document rejeté : {doc_name}"
-                                msg.attach(MIMEText(f"Bonjour,\n\nVotre document « {doc_name} » n'a pas été approuvé.\n\nCordialement,\nL'Assistant Doctrinal", "plain"))
+                                msg.attach(MIMEText(
+                                    f"Bonjour,\n\nVotre document « {doc_name} » n'a pas été approuvé.\n\nCordialement,\nL'Assistant Doctrinal",
+                                    "plain"))
                                 with smtplib.SMTP("smtp.gmail.com", 587) as server:
                                     server.starttls()
                                     server.login(sender, password_smtp)
