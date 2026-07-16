@@ -58,9 +58,10 @@ def extract_claims(text):
     Document:
     {text}
     """
-    client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+    # Auto-detects GEMINI_API_KEY from env / Streamlit Secrets
+    client = genai.Client()
     response = client.models.generate_content(
-        model="gemini-3.1-flash-lite",
+        model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction="You are a biblical theologian extracting doctrinal claims from documents.",
@@ -106,9 +107,10 @@ def validate_document(path):
     {existing_doctrine}
     """
 
-    client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+    # Auto-detects GEMINI_API_KEY from env / Streamlit Secrets
+    client = genai.Client()
     response = client.models.generate_content(
-        model="gemini-3.1-flash-lite",
+        model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction="Act as a biblical Theologian Expert comparing new teaching against established doctrine.",
@@ -278,9 +280,10 @@ def ai_search(question):
     Question: {question}
     """
 
-    client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+    # Auto-detects GEMINI_API_KEY from env / Streamlit Secrets
+    client = genai.Client()
     response = client.models.generate_content(
-        model="gemini-3.1-flash-lite",
+        model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             system_instruction="Act as a Theologian Expert to guide users based on church doctrine.",
