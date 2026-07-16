@@ -3,7 +3,6 @@ import pickle
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-
 from pypdf import PdfReader
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -12,7 +11,7 @@ import chromadb
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from rank_bm25 import BM25Okapi  # Added to rebuild BM25 when new PDFs are uploaded
+from rank_bm25 import BM25Okapi  # Rebuilds BM25 when new PDFs are uploaded
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
 load_dotenv()
@@ -33,28 +32,22 @@ collection = db_client.get_or_create_collection(name="bible_doctrine_v3")
 
 def get_genai_client():
     """Safely retrieves the Gemini API Key from all possible environments
-
     (local env, Streamlit Secrets, GEMINI_API_KEY, or GOOGLE_API_KEY)
     """
-    # 1. Try retrieving from environment variables
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-    # 2. Try retrieving from Streamlit secrets if running on Streamlit Cloud
     if not api_key:
         try:
             import streamlit as st
-
             api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get(
                 "GOOGLE_API_KEY"
             )
         except Exception:
             pass
 
-    # Initialize client with the found API key
     if api_key:
         return genai.Client(api_key=api_key)
 
-    # Ultimate fallback (uses SDK default configuration)
     return genai.Client()
 
 
@@ -92,178 +85,10 @@ def expand_question(question):
     return question
 
 
-def extract_claims(text):
-    prompt = f"""
-    Read the following theological document and extract 
-    the main doctrinal claims it makes.
-    Return them as a numbered list. Maximum 10 claims. 
-    Be concise and precise.
-
-    Document:
-    {text}
+def retrieve_context(question):
+    """Local hybrid search (Semantic + BM25) to extract relevant database text.
+    Requires ZERO Gemini API calls.
     """
-    client = get_genai_client()
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=(
-                "You are a biblical theologian extracting doctrinal claims"
-                " from documents."
-            ),
-            temperature=0.0,
-        ),
-    )
-    return response.text
-
-
-def validate_document(path):
-    # Safe text extraction from PDF
-    newdoc = PdfReader(path)
-    text_parts = []
-    for page in newdoc.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text_parts.append(page_text)
-    text = "\n".join(text_parts)
-
-    ext_claims = extract_claims(text)
-
-    # Split claims and search each one individually
-    claims_list = [c.strip() for c in ext_claims.split("\n") if c.strip()][:5]
-    all_doctrine = []
-    for claim in claims_list:
-        result = ai_search(claim)
-        all_doctrine.append(result)
-    existing_doctrine = "\n".join(all_doctrine)
-
-    prompt = f"""
-    Compare the new document's claims against the existing church doctrine retrieved.
-    Score the alignment from 1 to 5, where 1 means strong contradiction 
-    and 5 means perfect alignment.
-
-    Provide your answer in this format:
-    Score: (number 1-5)
-    Explanation: (2-3 sentences explaining agreement or contradiction)
-
-    New document claims:
-    {ext_claims}
-
-    Existing doctrine retrieved:
-    {existing_doctrine}
-    """
-
-    client = get_genai_client()
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=(
-                "Act as a biblical Theologian Expert comparing new teaching"
-                " against established doctrine."
-            ),
-            temperature=0.0,
-        ),
-    )
-    return response.text
-
-
-def send_notification_email(document_name, validation_report):
-    sender = os.getenv("GMAIL_ADDRESS")
-    password = os.getenv("GMAIL_APP_PASSWORD")
-
-    # Safe Fallback: Look for ADMIN_EMAIL (you) first. If not set, use FATHER_EMAIL.
-    receiver = os.getenv("FATHER_EMAIL")
-
-    # Build the email
-    msg = MIMEMultipart()
-    msg["From"] = sender
-    msg["To"] = receiver
-    msg["Subject"] = (
-        f"Nouveau document en attente de validation : {document_name}"
-    )
-
-    body = f"""
-Bonjour,
-
-Un nouveau document a été soumis pour validation doctrinale.
-
-Document : {document_name}
-
-Rapport de validation :
-{validation_report}
-
-Veuillez vous connecter à l'application pour approuver ou rejeter ce document.
-
-Cordialement,
-L'Assistant Doctrinal
-    """
-
-    msg.attach(MIMEText(body, "plain"))
-
-    # Send the email
-    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-        server.starttls()
-        server.login(sender, password)
-        server.sendmail(sender, receiver, msg.as_string())
-
-    print(f"Email sent to {receiver}")
-
-
-def add_to_collection(path):
-    global chunks, bm25  # Access global instances to update memory in place
-
-    # Safe text extraction from PDF
-    newdoc = PdfReader(path)
-    text_parts = []
-    for page in newdoc.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text_parts.append(page_text)
-    text = "\n".join(text_parts)
-
-    # Chunk using same safe strategy as index.py (Keep short verses!)
-    lines = [p.strip() for p in text.split("\n") if len(p.strip()) > 0]
-    new_chunks = []
-    for i in range(0, len(lines), 2):
-        chunk = " ".join(lines[i : i + 3])
-        if len(chunk) > 50:
-            new_chunks.append(chunk)
-
-    # Generate unique IDs starting after existing chunks
-    start_id = len(chunks)
-    new_ids = [f"id_{start_id + i}" for i in range(len(new_chunks))]
-
-    # Embed and add to ChromaDB in smaller batches (Safer for Streamlit RAM limits)
-    batch_size = 256
-    for i in range(0, len(new_chunks), batch_size):
-        batch_chunks = new_chunks[i : i + batch_size]
-        batch_ids = new_ids[i : i + batch_size]
-        batch_embeddings = model.encode(batch_chunks).tolist()
-        collection.add(
-            embeddings=batch_embeddings, ids=batch_ids, documents=batch_chunks
-        )
-
-    # Update chunks and completely rebuild the BM25 index
-    chunks.extend(new_chunks)
-    tokenized_chunks = [chunk.lower().split() for chunk in chunks]
-    bm25 = BM25Okapi(tokenized_chunks)
-
-    # Save both updated files safely to disk
-    with open("chunks_doctrine.pkl", "wb") as pkl_file:
-        pickle.dump(chunks, pkl_file)
-
-    with open("bm25_doctrine.pkl", "wb") as pkl_file:
-        pickle.dump(bm25, pkl_file)
-
-    print(
-        f"Added {len(new_chunks)} new chunks from {path} and updated BM25"
-        " index."
-    )
-    return len(new_chunks)
-
-
-def ai_search(question):
     expanded = expand_question(question)
     normalized_question = expanded.lower().strip()
 
@@ -333,7 +158,14 @@ def ai_search(question):
         ][:3]
         final_chunks = list(dict.fromkeys(grave_chunks + final_chunks))[:5]
 
-    context = "\n".join(final_chunks)
+    return "\n".join(final_chunks)
+
+
+def ai_search(question):
+    """User-facing search.
+    Uses local database retrieval, then calls Gemini once to generate an answer.
+    """
+    context = retrieve_context(question)
 
     prompt = f"""
     Only use the context and the question to answer the user question.
@@ -359,6 +191,175 @@ def ai_search(question):
         ),
     )
     return response.text
+
+
+def extract_claims(text):
+    prompt = f"""
+    Read the following theological document and extract 
+    the main doctrinal claims it makes.
+    Return them as a numbered list. Maximum 10 claims. 
+    Be concise and precise.
+
+    Document:
+    {text}
+    """
+    client = get_genai_client()
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=(
+                "You are a biblical theologian extracting doctrinal claims"
+                " from documents."
+            ),
+            temperature=0.0,
+        ),
+    )
+    return response.text
+
+
+def validate_document(path):
+    """Reads PDF, extracts claims (Gemini Call 1), retrieves matching doctrine
+    from the local database locally, and validates the differences (Gemini Call
+    2).
+    """
+    newdoc = PdfReader(path)
+    text_parts = []
+    for page in newdoc.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text_parts.append(page_text)
+    text = "\n".join(text_parts)
+
+    # Gemini Call 1: Extract the claims from the PDF
+    ext_claims = extract_claims(text)
+
+    # Process claims (Retrieve doctrine chunks purely locally!)
+    claims_list = [c.strip() for c in ext_claims.split("\n") if c.strip()][:5]
+    all_doctrine_contexts = []
+    for claim in claims_list:
+        db_context = retrieve_context(claim)
+        all_doctrine_contexts.append(
+            f"For Claim: '{claim}'\nEstablished Doctrine Chunks:\n{db_context}"
+        )
+
+    existing_doctrine = "\n\n---\n\n".join(all_doctrine_contexts)
+
+    prompt = f"""
+    Compare the new document's claims against the existing church doctrine retrieved.
+    Score the alignment from 1 to 5, where 1 means strong contradiction 
+    and 5 means perfect alignment.
+
+    Provide your answer in this format:
+    Score: (number 1-5)
+    Explanation: (2-3 sentences explaining agreement or contradiction)
+
+    New document claims:
+    {ext_claims}
+
+    Existing doctrine retrieved:
+    {existing_doctrine}
+    """
+
+    # Gemini Call 2: Final comparison report
+    client = get_genai_client()
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=(
+                "Act as a biblical Theologian Expert comparing new teaching"
+                " against established doctrine."
+            ),
+            temperature=0.0,
+        ),
+    )
+    return response.text
+
+
+def send_notification_email(document_name, validation_report):
+    sender = os.getenv("GMAIL_ADDRESS")
+    password = os.getenv("GMAIL_APP_PASSWORD")
+    receiver = os.getenv("FATHER_EMAIL")
+
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = receiver
+    msg["Subject"] = (
+        f"Nouveau document en attente de validation : {document_name}"
+    )
+
+    body = f"""
+Bonjour,
+
+Un nouveau document a été soumis pour validation doctrinale.
+
+Document : {document_name}
+
+Rapport de validation :
+{validation_report}
+
+Veuillez vous connecter à l'application pour approuver ou rejeter ce document.
+
+Cordialement,
+L'Assistant Doctrinal
+    """
+
+    msg.attach(MIMEText(body, "plain"))
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(sender, password)
+        server.sendmail(sender, receiver, msg.as_string())
+
+    print(f"Email sent to {receiver}")
+
+
+def add_to_collection(path):
+    global chunks, bm25
+
+    newdoc = PdfReader(path)
+    text_parts = []
+    for page in newdoc.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text_parts.append(page_text)
+    text = "\n".join(text_parts)
+
+    lines = [p.strip() for p in text.split("\n") if len(p.strip()) > 0]
+    new_chunks = []
+    for i in range(0, len(lines), 2):
+        chunk = " ".join(lines[i : i + 3])
+        if len(chunk) > 50:
+            new_chunks.append(chunk)
+
+    start_id = len(chunks)
+    new_ids = [f"id_{start_id + i}" for i in range(len(new_chunks))]
+
+    batch_size = 256
+    for i in range(0, len(new_chunks), batch_size):
+        batch_chunks = new_chunks[i : i + batch_size]
+        batch_ids = new_ids[i : i + batch_size]
+        batch_embeddings = model.encode(batch_chunks).tolist()
+        collection.add(
+            embeddings=batch_embeddings, ids=batch_ids, documents=batch_chunks
+        )
+
+    chunks.extend(new_chunks)
+    tokenized_chunks = [chunk.lower().split() for chunk in chunks]
+    bm25 = BM25Okapi(tokenized_chunks)
+
+    with open("chunks_doctrine.pkl", "wb") as pkl_file:
+        pickle.dump(chunks, pkl_file)
+
+    with open("bm25_doctrine.pkl", "wb") as pkl_file:
+        pickle.dump(bm25, pkl_file)
+
+    print(
+        f"Added {len(new_chunks)} new chunks from {path} and updated BM25"
+        " index."
+    )
+    return len(new_chunks)
 
 
 if __name__ == "__main__":
