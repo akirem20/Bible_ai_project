@@ -1,19 +1,19 @@
 import os
+import pickle
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 from pypdf import PdfReader
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+import chromadb
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from sentence_transformers import SentenceTransformer, CrossEncoder
 from rank_bm25 import BM25Okapi  # Added to rebuild BM25 when new PDFs are uploaded
-import chromadb
-import pickle
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from sentence_transformers import CrossEncoder, SentenceTransformer
 
 load_dotenv()
 
@@ -25,22 +25,66 @@ with open("bm25_doctrine.pkl", "rb") as f:
     bm25 = pickle.load(f)
 
 # Load models and ChromaDB
-model = SentenceTransformer('distiluse-base-multilingual-cased-v2')
-model_reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+model = SentenceTransformer("distiluse-base-multilingual-cased-v2")
+model_reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 db_client = chromadb.PersistentClient(path="./chroma_doctrine_db")
 collection = db_client.get_or_create_collection(name="bible_doctrine_v3")
+
+
+def get_genai_client():
+    """Safely retrieves the Gemini API Key from all possible environments
+
+    (local env, Streamlit Secrets, GEMINI_API_KEY, or GOOGLE_API_KEY)
+    """
+    # 1. Try retrieving from environment variables
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+    # 2. Try retrieving from Streamlit secrets if running on Streamlit Cloud
+    if not api_key:
+        try:
+            import streamlit as st
+
+            api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get(
+                "GOOGLE_API_KEY"
+            )
+        except Exception:
+            pass
+
+    # Initialize client with the found API key
+    if api_key:
+        return genai.Client(api_key=api_key)
+
+    # Ultimate fallback (uses SDK default configuration)
+    return genai.Client()
 
 
 def expand_question(question):
     expansions = {
         "péché": "péché transgression loi Satan mort 1 Jean 3.4",
         "vérité": "vérité Jésus Esprit Amour Évangile",
-        "adoration": "adoration Esprit Vérité Jean 4.24 Père adorateurs sanctifier affranchir",
-        "lèpre": "lèpre péché agression réaction plaie tumeur cicatrice brûlure orgueil",
-        "souillure": "souillure impureté Lévitique eau mort ossements sépulcre biologique",
-        "chrétien": "chrétien adoration Esprit Vérité sanctifier affranchir nouvel homme",
-        "différents types": "péchés expiable non-expiable Lévitique 4 5 6 20 21 sang eau spéciaux lèpre mort impureté expiation",
-        "souillures les plus graves": "graves non-expiables sang meurtres Mammon doctrine mort piété jeûne prière philosophie mondaine Lévitique"
+        "adoration": (
+            "adoration Esprit Vérité Jean 4.24 Père adorateurs sanctifier"
+            " affranchir"
+        ),
+        "lèpre": (
+            "lèpre péché agression réaction plaie tumeur cicatrice brûlure"
+            " orgueil"
+        ),
+        "souillure": (
+            "souillure impureté Lévitique eau mort ossements sépulcre biologique"
+        ),
+        "chrétien": (
+            "chrétien adoration Esprit Vérité sanctifier affranchir nouvel"
+            " homme"
+        ),
+        "différents types": (
+            "péchés expiable non-expiable Lévitique 4 5 6 20 21 sang eau spéciaux"
+            " lèpre mort impureté expiation"
+        ),
+        "souillures les plus graves": (
+            "graves non-expiables sang meurtres Mammon doctrine mort piété jeûne"
+            " prière philosophie mondaine Lévitique"
+        ),
     }
     for keyword, expansion in expansions.items():
         if keyword in question.lower():
@@ -58,15 +102,17 @@ def extract_claims(text):
     Document:
     {text}
     """
-    # Auto-detects GEMINI_API_KEY from env / Streamlit Secrets
-    client = genai.Client()
+    client = get_genai_client()
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction="You are a biblical theologian extracting doctrinal claims from documents.",
-            temperature=0.0
-        )
+            system_instruction=(
+                "You are a biblical theologian extracting doctrinal claims"
+                " from documents."
+            ),
+            temperature=0.0,
+        ),
     )
     return response.text
 
@@ -107,15 +153,17 @@ def validate_document(path):
     {existing_doctrine}
     """
 
-    # Auto-detects GEMINI_API_KEY from env / Streamlit Secrets
-    client = genai.Client()
+    client = get_genai_client()
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction="Act as a biblical Theologian Expert comparing new teaching against established doctrine.",
-            temperature=0.0
-        )
+            system_instruction=(
+                "Act as a biblical Theologian Expert comparing new teaching"
+                " against established doctrine."
+            ),
+            temperature=0.0,
+        ),
     )
     return response.text
 
@@ -131,7 +179,9 @@ def send_notification_email(document_name, validation_report):
     msg = MIMEMultipart()
     msg["From"] = sender
     msg["To"] = receiver
-    msg["Subject"] = f"Nouveau document en attente de validation : {document_name}"
+    msg["Subject"] = (
+        f"Nouveau document en attente de validation : {document_name}"
+    )
 
     body = f"""
 Bonjour,
@@ -176,7 +226,7 @@ def add_to_collection(path):
     lines = [p.strip() for p in text.split("\n") if len(p.strip()) > 0]
     new_chunks = []
     for i in range(0, len(lines), 2):
-        chunk = " ".join(lines[i:i + 3])
+        chunk = " ".join(lines[i : i + 3])
         if len(chunk) > 50:
             new_chunks.append(chunk)
 
@@ -187,13 +237,11 @@ def add_to_collection(path):
     # Embed and add to ChromaDB in smaller batches (Safer for Streamlit RAM limits)
     batch_size = 256
     for i in range(0, len(new_chunks), batch_size):
-        batch_chunks = new_chunks[i:i + batch_size]
-        batch_ids = new_ids[i:i + batch_size]
+        batch_chunks = new_chunks[i : i + batch_size]
+        batch_ids = new_ids[i : i + batch_size]
         batch_embeddings = model.encode(batch_chunks).tolist()
         collection.add(
-            embeddings=batch_embeddings,
-            ids=batch_ids,
-            documents=batch_chunks
+            embeddings=batch_embeddings, ids=batch_ids, documents=batch_chunks
         )
 
     # Update chunks and completely rebuild the BM25 index
@@ -208,7 +256,10 @@ def add_to_collection(path):
     with open("bm25_doctrine.pkl", "wb") as pkl_file:
         pickle.dump(bm25, pkl_file)
 
-    print(f"Added {len(new_chunks)} new chunks from {path} and updated BM25 index.")
+    print(
+        f"Added {len(new_chunks)} new chunks from {path} and updated BM25"
+        " index."
+    )
     return len(new_chunks)
 
 
@@ -219,52 +270,67 @@ def ai_search(question):
     # Semantic search
     vec_q = model.encode([normalized_question]).tolist()
     result = collection.query(query_embeddings=vec_q, n_results=10)
-    s_search = result['documents'][0]
-    s_search = [c for c in s_search if not c.strip().startswith(tuple("123456789"))]
+    s_search = result["documents"][0]
+    s_search = [
+        c for c in s_search if not c.strip().startswith(tuple("123456789"))
+    ]
 
     # BM25 keyword search
     h_q = normalized_question.split()
     h_score = bm25.get_scores(h_q)
-    top_indices_score = sorted(range(len(h_score)),
-                               key=lambda k: h_score[k],
-                               reverse=True)[:10]
+    top_indices_score = sorted(
+        range(len(h_score)), key=lambda k: h_score[k], reverse=True
+    )[:10]
     h_search = [chunks[i] for i in top_indices_score]
-    h_search = [c for c in h_search if not c.strip().startswith(tuple("123456789"))]
+    h_search = [
+        c for c in h_search if not c.strip().startswith(tuple("123456789"))
+    ]
 
     # Combine
     combined = list(dict.fromkeys(s_search + h_search))[:20]
 
     # Force inject BEFORE Cross-Encoder
     if "différents types" in question.lower():
-        expiable_chunks = [c for c in chunks
-                           if "expiable" in c.lower()][:3]
+        expiable_chunks = [
+            c for c in chunks if "expiable" in c.lower()
+        ][:3]
         combined = list(dict.fromkeys(expiable_chunks + combined))[:20]
 
     if "souillures les plus graves" in question.lower():
-        grave_chunks = [c for c in chunks
-                        if "souillure" in c.lower()
-                        and ("sang" in c.lower()
-                             or "mort" in c.lower()
-                             or "nombre 19" in c.lower()
-                             or "purifi" in c.lower())][:5]
+        grave_chunks = [
+            c
+            for c in chunks
+            if "souillure" in c.lower()
+            and (
+                "sang" in c.lower()
+                or "mort" in c.lower()
+                or "nombre 19" in c.lower()
+                or "purifi" in c.lower()
+            )
+        ][:5]
         combined = list(dict.fromkeys(grave_chunks + combined))[:20]
 
     # Cross-Encoder reranking
     pairs = [[question, chunk] for chunk in combined]
     cross_scores = model_reranker.predict(pairs)
-    top_indice_cross = sorted(range(len(cross_scores)),
-                              key=lambda k: cross_scores[k],
-                              reverse=True)[:5]
+    top_indice_cross = sorted(
+        range(len(cross_scores)), key=lambda k: cross_scores[k], reverse=True
+    )[:5]
     final_chunks = [combined[i] for i in top_indice_cross]
 
     # Force into final context AFTER Cross-Encoder
     if "souillures les plus graves" in question.lower():
-        grave_chunks = [c for c in chunks
-                        if "souillure" in c.lower()
-                        and ("sang" in c.lower()
-                             or "mort" in c.lower()
-                             or "nombre 19" in c.lower()
-                             or "purifi" in c.lower())][:3]
+        grave_chunks = [
+            c
+            for c in chunks
+            if "souillure" in c.lower()
+            and (
+                "sang" in c.lower()
+                or "mort" in c.lower()
+                or "nombre 19" in c.lower()
+                or "purifi" in c.lower()
+            )
+        ][:3]
         final_chunks = list(dict.fromkeys(grave_chunks + final_chunks))[:5]
 
     context = "\n".join(final_chunks)
@@ -280,19 +346,23 @@ def ai_search(question):
     Question: {question}
     """
 
-    # Auto-detects GEMINI_API_KEY from env / Streamlit Secrets
-    client = genai.Client()
+    client = get_genai_client()
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction="Act as a Theologian Expert to guide users based on church doctrine.",
-            temperature=0.0
-        )
+            system_instruction=(
+                "Act as a Theologian Expert to guide users based on church"
+                " doctrine."
+            ),
+            temperature=0.0,
+        ),
     )
     return response.text
 
 
 if __name__ == "__main__":
-    answer = ai_search("Quelle sont les souillures les plus graves ? Et comment les éviter ?")
+    answer = ai_search(
+        "Quelle sont les souillures les plus graves ? Et comment les éviter ?"
+    )
     print(answer)
