@@ -11,6 +11,7 @@ import chromadb
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from google.genai import errors  # Handles and exposes API errors clearly
 from rank_bm25 import BM25Okapi  # Rebuilds BM25 when new PDFs are uploaded
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
@@ -126,12 +127,12 @@ def retrieve_context(question):
             c
             for c in chunks
             if "souillure" in c.lower()
-            and (
-                "sang" in c.lower()
-                or "mort" in c.lower()
-                or "nombre 19" in c.lower()
-                or "purifi" in c.lower()
-            )
+               and (
+                       "sang" in c.lower()
+                       or "mort" in c.lower()
+                       or "nombre 19" in c.lower()
+                       or "purifi" in c.lower()
+               )
         ][:5]
         combined = list(dict.fromkeys(grave_chunks + combined))[:20]
 
@@ -149,12 +150,12 @@ def retrieve_context(question):
             c
             for c in chunks
             if "souillure" in c.lower()
-            and (
-                "sang" in c.lower()
-                or "mort" in c.lower()
-                or "nombre 19" in c.lower()
-                or "purifi" in c.lower()
-            )
+               and (
+                       "sang" in c.lower()
+                       or "mort" in c.lower()
+                       or "nombre 19" in c.lower()
+                       or "purifi" in c.lower()
+               )
         ][:3]
         final_chunks = list(dict.fromkeys(grave_chunks + final_chunks))[:5]
 
@@ -163,7 +164,7 @@ def retrieve_context(question):
 
 def ai_search(question):
     """User-facing search.
-    Uses local database retrieval, then calls Gemini once to generate an answer.
+    Uses local database retrieval, then calls Gemini once to generate an answer without Markdown symbols.
     """
     context = retrieve_context(question)
 
@@ -171,6 +172,13 @@ def ai_search(question):
     Only use the context and the question to answer the user question.
     Answer strictly in French.
     Include relevant Bible verses first then answer.
+
+    CRITICAL FORMATTING RULES:
+    - Do NOT use any asterisks (* or **) anywhere in your response.
+    - Do not use markdown bullet points. 
+    - To list Bible verses, simply start a new line for each verse (e.g., "Romains 5:12 : [Text]").
+    - Use clean, normal paragraph breaks for your explanation.
+
     If the answer is not in the context say you are not able to answer.
 
     Context: {context}
@@ -178,19 +186,24 @@ def ai_search(question):
     Question: {question}
     """
 
-    client = get_genai_client()
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=(
-                "Act as a Theologian Expert to guide users based on church"
-                " doctrine."
+    try:
+        client = get_genai_client()
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "Act as a Theologian Expert to guide users based on church"
+                    " doctrine. Always write in plain text without markdown formatting."
+                ),
+                temperature=0.0,
             ),
-            temperature=0.0,
-        ),
-    )
-    return response.text
+        )
+        return response.text
+    except errors.APIError as e:
+        err_msg = getattr(e, 'message', str(e))
+        err_code = getattr(e, 'code', getattr(e, 'status_code', 'unknown'))
+        return f"⚠️ Erreur API Gemini (Status {err_code}) : {err_msg}"
 
 
 def extract_claims(text):
@@ -203,78 +216,116 @@ def extract_claims(text):
     Document:
     {text}
     """
-    client = get_genai_client()
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=(
-                "You are a biblical theologian extracting doctrinal claims"
-                " from documents."
+    try:
+        client = get_genai_client()
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "You are a biblical theologian extracting doctrinal claims"
+                    " from documents."
+                ),
+                temperature=0.0,
             ),
-            temperature=0.0,
-        ),
-    )
-    return response.text
+        )
+        return response.text
+    except errors.APIError as e:
+        err_msg = getattr(e, 'message', str(e))
+        err_code = getattr(e, 'code', getattr(e, 'status_code', 'unknown'))
+        raise RuntimeError(f"Gemini API Error during extraction (Status {err_code}): {err_msg}") from e
 
 
 def validate_document(path):
-    """Reads PDF, extracts claims (Gemini Call 1), retrieves matching doctrine
-    from the local database locally, and validates the differences (Gemini Call
-    2).
+    """Reads PDF, extracts claims, retrieves matching doctrines locally,
+    and generates a detailed comparison report. Handles errors gracefully.
     """
-    newdoc = PdfReader(path)
-    text_parts = []
-    for page in newdoc.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text_parts.append(page_text)
-    text = "\n".join(text_parts)
+    try:
+        newdoc = PdfReader(path)
+        text_parts = []
+        for page in newdoc.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text_parts.append(page_text)
+        text = "\n".join(text_parts).strip()
 
-    # Gemini Call 1: Extract the claims from the PDF
-    ext_claims = extract_claims(text)
+        # Guardrail: Check for scanned/blank PDFs
+        if not text:
+            return (
+                "⚠️ **Erreur :** Le document PDF ne contient pas de texte extractible. "
+                "Il s'agit probablement d'un document numérisé (scan). "
+                "Veuillez utiliser un fichier PDF textuel classique."
+            )
 
-    # Process claims (Retrieve doctrine chunks purely locally!)
-    claims_list = [c.strip() for c in ext_claims.split("\n") if c.strip()][:5]
-    all_doctrine_contexts = []
-    for claim in claims_list:
-        db_context = retrieve_context(claim)
-        all_doctrine_contexts.append(
-            f"For Claim: '{claim}'\nEstablished Doctrine Chunks:\n{db_context}"
-        )
+        # Payload threshold limit check
+        if len(text) > 50000:
+            text = text[:50000] + "\n\n[... Texte tronqué pour l'analyse ...]"
 
-    existing_doctrine = "\n\n---\n\n".join(all_doctrine_contexts)
+        # Safe Extraction Call
+        try:
+            ext_claims = extract_claims(text)
+        except Exception as e:
+            return f"⚠️ **Erreur lors de l'extraction des affirmations :** {str(e)}"
 
-    prompt = f"""
-    Compare the new document's claims against the existing church doctrine retrieved.
-    Score the alignment from 1 to 5, where 1 means strong contradiction 
-    and 5 means perfect alignment.
+        # Parse claims safely
+        claims_list = []
+        for line in ext_claims.split("\n"):
+            line = line.strip()
+            if line and (line[0].isdigit() or line.startswith("-") or line.startswith("*")):
+                cleaned = line.lstrip("0123456789.-* ")
+                if cleaned:
+                    claims_list.append(cleaned)
 
-    Provide your answer in this format:
-    Score: (number 1-5)
-    Explanation: (2-3 sentences explaining agreement or contradiction)
+        if not claims_list:
+            claims_list = [line.strip() for line in ext_claims.split("\n") if line.strip()][:5]
 
-    New document claims:
-    {ext_claims}
+        # Match claims purely locally via your hybrid search database
+        matched_doctrinal_context = []
+        for claim in claims_list[:5]:
+            db_context = retrieve_context(claim)
+            matched_doctrinal_context.append(
+                f"For Claim: '{claim}'\nEstablished Doctrine Chunks:\n{db_context}"
+            )
 
-    Existing doctrine retrieved:
-    {existing_doctrine}
-    """
+        existing_doctrine = "\n\n---\n\n".join(matched_doctrinal_context)
 
-    # Gemini Call 2: Final comparison report
-    client = get_genai_client()
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=(
-                "Act as a biblical Theologian Expert comparing new teaching"
-                " against established doctrine."
+        prompt = f"""
+        Compare the new document's claims against the existing church doctrine retrieved.
+        Score the alignment from 1 to 5, where 1 means strong contradiction 
+        and 5 means perfect alignment.
+
+        Provide your answer in this format:
+        Score: (number 1-5)
+        Explanation: (2-3 sentences explaining agreement or contradiction)
+
+        New document claims:
+        {ext_claims}
+
+        Existing doctrine retrieved:
+        {existing_doctrine}
+        """
+
+        # Safe Comparison Report Call
+        client = get_genai_client()
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "Act as a biblical Theologian Expert comparing new teaching"
+                    " against established doctrine."
+                ),
+                temperature=0.0,
             ),
-            temperature=0.0,
-        ),
-    )
-    return response.text
+        )
+        return response.text
+
+    except errors.APIError as e:
+        err_msg = getattr(e, 'message', str(e))
+        err_code = getattr(e, 'code', getattr(e, 'status_code', 'unknown'))
+        return f"⚠️ **Erreur API Gemini lors de la validation (Status {err_code}) :** {err_msg}"
+    except Exception as e:
+        return f"⚠️ **Erreur inattendue lors du traitement du document :** {str(e)}"
 
 
 def send_notification_email(document_name, validation_report):
@@ -329,7 +380,7 @@ def add_to_collection(path):
     lines = [p.strip() for p in text.split("\n") if len(p.strip()) > 0]
     new_chunks = []
     for i in range(0, len(lines), 2):
-        chunk = " ".join(lines[i : i + 3])
+        chunk = " ".join(lines[i: i + 3])
         if len(chunk) > 50:
             new_chunks.append(chunk)
 
@@ -338,8 +389,8 @@ def add_to_collection(path):
 
     batch_size = 256
     for i in range(0, len(new_chunks), batch_size):
-        batch_chunks = new_chunks[i : i + batch_size]
-        batch_ids = new_ids[i : i + batch_size]
+        batch_chunks = new_chunks[i: i + batch_size]
+        batch_ids = new_ids[i: i + batch_size]
         batch_embeddings = model.encode(batch_chunks).tolist()
         collection.add(
             embeddings=batch_embeddings, ids=batch_ids, documents=batch_chunks
