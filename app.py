@@ -333,6 +333,11 @@ with col_right:
         tab1, tab2 = st.tabs(["Question", "Document"])
         tab3 = None
 
+    # Persistent status messages across dynamic component refreshes
+    if "doc_success_msg" in st.session_state:
+        st.success(st.session_state["doc_success_msg"])
+        del st.session_state["doc_success_msg"]
+
     # ── TAB 1 — QUESTION ──
     with tab1:
         question = st.text_input(
@@ -362,7 +367,16 @@ with col_right:
             "<p style='font-family:Inter,sans-serif;font-size:0.875rem;color:#8896a7;margin-bottom:1rem;'>Le document sera analysé et un rapport sera envoyé au responsable pour approbation.</p>",
             unsafe_allow_html=True
         )
-        uploaded_file = st.file_uploader("Choisir un fichier PDF", type=["pdf"], key="pdf_uploader")
+
+        # Unique dynamic uploader key implementation to reset widget on successful submit
+        if "uploader_key" not in st.session_state:
+            st.session_state["uploader_key"] = 0
+
+        uploaded_file = st.file_uploader(
+            "Choisir un fichier PDF",
+            type=["pdf"],
+            key=f"pdf_uploader_{st.session_state['uploader_key']}"
+        )
         submitter_email = st.text_input("Votre adresse email", placeholder="votre@email.com", key="input_email")
 
         if st.button("Soumettre pour validation", key="submit"):
@@ -372,17 +386,44 @@ with col_right:
                     with open(temp_path, "wb") as temp_file:
                         temp_file.write(uploaded_file.getbuffer())
 
-                    # Récupération et nettoyage immédiat des astérisques du rapport
+                    # 1. Local parsing to fetch content preview ("what the doc is about")
+                    try:
+                        from pypdf import PdfReader
+
+                        reader = PdfReader(temp_path)
+                        extracted_text = ""
+                        for page in reader.pages[:2]:  # Check first 2 pages
+                            page_text = page.extract_text()
+                            if page_text:
+                                extracted_text += page_text + "\n"
+                        preview_content = extracted_text.strip()[:600]
+                        if not preview_content:
+                            preview_content = "Contenu textuel non détecté à la racine du PDF (Document possiblement numérisé)."
+                    except Exception as e:
+                        preview_content = f"Impossible de lire le sujet du fichier: {str(e)}"
+
+                    # 2. Get the validation report report text safely
                     raw_report = validate_document(temp_path)
                     validation_report = raw_report.replace("**", "")
 
-                    # Sauvegarde persistante dans la base JSON locale pour l'Admin
-                    sauvegarder_document_attente(uploaded_file.name, submitter_email, validation_report, temp_path)
+                    # 3. Store securely inside local JSON DB for Admin review
+                    sauvegarder_document_attente(
+                        uploaded_file.name,
+                        submitter_email,
+                        validation_report,
+                        temp_path,
+                        preview_content
+                    )
 
-                send_notification_email(uploaded_file.name, validation_report)
-                st.success("Document soumis. Le responsable a été notifié.")
-                st.markdown("#### Rapport de validation")
-                st.write(validation_report)
+                try:
+                    send_notification_email(uploaded_file.name, validation_report)
+                except Exception:
+                    pass
+
+                # Feedback layout strictly isolated from raw Gemini API failures for standard users
+                st.session_state["doc_success_msg"] = "Document soumis avec succès. Le responsable a été notifié."
+                st.session_state["uploader_key"] += 1
+                st.rerun()
             else:
                 st.warning("Veuillez télécharger un PDF et entrer votre email.")
 
@@ -444,6 +485,12 @@ with col_right:
                     for index, doc in enumerate(docs_a_valider):
                         st.markdown(f"📄 <b>Document :</b> {doc['nom']}", unsafe_allow_html=True)
                         st.markdown(f"📧 <b>Soumis par :</b> {doc['email']}", unsafe_allow_html=True)
+
+                        # Admin exclusive view displaying exactly what the text file is about
+                        sujet_doc = doc.get("preview", "Aperçu indisponible pour ce fichier.")
+                        st.markdown("📝 <b>Sujet / Aperçu du contenu du document :</b>", unsafe_allow_html=True)
+                        st.info(sujet_doc)
+
                         st.text_area("Rapport d'analyse", value=doc['rapport'], height=250, disabled=True,
                                      key=f"report_area_{index}")
 

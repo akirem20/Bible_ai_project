@@ -48,8 +48,8 @@ def charger_documents_attente():
         return []
 
 
-def sauvegarder_document_attente(nom, email, rapport, temp_path):
-    """Enregistre un nouveau document soumis dans le fichier JSON local."""
+def sauvegarder_document_attente(nom, email, rapport, temp_path, preview=""):
+    """Enregistre un nouveau document soumis dans le fichier JSON local avec son aperçu textuel."""
     docs = charger_documents_attente()
     # Évite les doublons si le même fichier est soumis à nouveau
     docs = [d for d in docs if d["nom"] != nom]
@@ -58,7 +58,8 @@ def sauvegarder_document_attente(nom, email, rapport, temp_path):
         "nom": nom,
         "email": email,
         "rapport": rapport,
-        "temp_path": temp_path
+        "temp_path": temp_path,
+        "preview": preview
     })
 
     with open(PENDING_DOCS_FILE, "w", encoding="utf-8") as f:
