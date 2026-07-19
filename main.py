@@ -18,27 +18,24 @@ from sentence_transformers import CrossEncoder, SentenceTransformer
 
 load_dotenv()
 
-# Fichier de persistance local pour les documents en attente
 PENDING_DOCS_FILE = "documents_attente.json"
 
-# Load from disk
+# Charger les fichiers d'indexation
 with open("chunks_doctrine.pkl", "rb") as f:
     chunks = pickle.load(f)
 
 with open("bm25_doctrine.pkl", "rb") as f:
     bm25 = pickle.load(f)
 
-# Load models and ChromaDB
 model = SentenceTransformer("distiluse-base-multilingual-cased-v2")
 model_reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 db_client = chromadb.PersistentClient(path="./chroma_doctrine_db")
 collection = db_client.get_or_create_collection(name="bible_doctrine_v3")
 
 
-# ── FONCTIONS DE GESTION DE LA FILE D'ATTENTE (JSON) ──
+# ── GESTION DE LA FILE D'ATTENTE JSON ──
 
 def charger_documents_attente():
-    """Charge la liste des documents en attente depuis le fichier JSON local."""
     if not os.path.exists(PENDING_DOCS_FILE):
         return []
     try:
@@ -49,10 +46,8 @@ def charger_documents_attente():
 
 
 def sauvegarder_document_attente(nom, email, rapport, temp_path, preview=""):
-    """Enregistre un nouveau document soumis dans le fichier JSON local avec son aperçu textuel."""
     docs = charger_documents_attente()
     docs = [d for d in docs if d["nom"] != nom]
-
     docs.append({
         "nom": nom,
         "email": email,
@@ -60,38 +55,29 @@ def sauvegarder_document_attente(nom, email, rapport, temp_path, preview=""):
         "temp_path": temp_path,
         "preview": preview
     })
-
     with open(PENDING_DOCS_FILE, "w", encoding="utf-8") as f:
         json.dump(docs, f, ensure_ascii=False, indent=4)
 
 
 def supprimer_document_attente(nom):
-    """Supprime un document de la file d'attente JSON après traitement (Approbation/Rejet)."""
     docs = charger_documents_attente()
     docs = [d for d in docs if d["nom"] != nom]
-
     with open(PENDING_DOCS_FILE, "w", encoding="utf-8") as f:
         json.dump(docs, f, ensure_ascii=False, indent=4)
 
 
-# ── FONCTIONS RAG ET THÉOLOGIQUES EXISTANTES ──
+# ── RECHERCHE HYBRIDE LOCAL ──
 
 def get_genai_client():
-    """Safely retrieves the Gemini API Key from all possible environments."""
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-
     if not api_key:
         try:
             import streamlit as st
-            api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get(
-                "GOOGLE_API_KEY"
-            )
+            api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("GOOGLE_API_KEY")
         except Exception:
             pass
-
     if api_key:
         return genai.Client(api_key=api_key)
-
     return genai.Client()
 
 
@@ -99,29 +85,12 @@ def expand_question(question):
     expansions = {
         "péché": "péché transgression loi Satan mort 1 Jean 3.4",
         "vérité": "vérité Jésus Esprit Amour Évangile",
-        "adoration": (
-            "adoration Esprit Vérité Jean 4.24 Père adorateurs sanctifier"
-            " affranchir"
-        ),
-        "lèpre": (
-            "lèpre péché agression réaction plaie tumeur cicatrice brûlure"
-            " orgueil"
-        ),
-        "souillure": (
-            "souillure impureté Lévitique eau mort ossements sépulcre biologique"
-        ),
-        "chrétien": (
-            "chrétien adoration Esprit Vérité sanctifier affranchir nouvel"
-            " homme"
-        ),
-        "différents types": (
-            "péchés expiable non-expiable Lévitique 4 5 6 20 21 sang eau spéciaux"
-            " lèpre mort impureté expiation"
-        ),
-        "souillures les plus graves": (
-            "graves non-expiables sang meurtres Mammon doctrine mort piété jeûne"
-            " prière philosophie mondaine Lévitique"
-        ),
+        "adoration": "adoration Esprit Vérité Jean 4.24 Père adorateurs sanctifier affranchir",
+        "lèpre": "lèpre péché agression réaction plaie tumeur cicatrice brûlure orgueil",
+        "souillure": "souillure impureté Lévitique eau mort ossements sépulcre biologique",
+        "chrétien": "chrétien adoration Esprit Vérité sanctifier affranchir nouvel homme",
+        "différents types": "péchés expiable non-expiable Lévitique 4 5 6 20 21 sang eau spéciaux lèpre mort impureté expiation",
+        "souillures les plus graves": "graves non-expiables sang meurtres Mammon doctrine mort piété jeûne prière philosophie mondaine Lévitique",
     }
     for keyword, expansion in expansions.items():
         if keyword in question.lower():
@@ -130,30 +99,20 @@ def expand_question(question):
 
 
 def retrieve_context(question):
-    """Local hybrid search (Semantic + BM25) to extract relevant database text."""
     expanded = expand_question(question)
     normalized_question = expanded.lower().strip()
 
-    # Semantic search
     vec_q = model.encode([normalized_question]).tolist()
     result = collection.query(query_embeddings=vec_q, n_results=10)
     s_search = result["documents"][0]
-    s_search = [
-        c for c in s_search if not c.strip().startswith(tuple("123456789"))
-    ]
+    s_search = [c for c in s_search if not c.strip().startswith(tuple("123456789"))]
 
-    # BM25 keyword search
     h_q = normalized_question.split()
     h_score = bm25.get_scores(h_q)
-    top_indices_score = sorted(
-        range(len(h_score)), key=lambda k: h_score[k], reverse=True
-    )[:10]
+    top_indices_score = sorted(range(len(h_score)), key=lambda k: h_score[k], reverse=True)[:10]
     h_search = [chunks[i] for i in top_indices_score]
-    h_search = [
-        c for c in h_search if not c.strip().startswith(tuple("123456789"))
-    ]
+    h_search = [c for c in h_search if not c.strip().startswith(tuple("123456789"))]
 
-    # Combine
     combined = list(dict.fromkeys(s_search + h_search))[:20]
 
     if "différents types" in question.lower():
@@ -168,12 +127,9 @@ def retrieve_context(question):
         ][:5]
         combined = list(dict.fromkeys(grave_chunks + combined))[:20]
 
-    # Cross-Encoder reranking
     pairs = [[question, chunk] for chunk in combined]
     cross_scores = model_reranker.predict(pairs)
-    top_indice_cross = sorted(
-        range(len(cross_scores)), key=lambda k: cross_scores[k], reverse=True
-    )[:5]
+    top_indice_cross = sorted(range(len(cross_scores)), key=lambda k: cross_scores[k], reverse=True)[:5]
     final_chunks = [combined[i] for i in top_indice_cross]
 
     if "souillures les plus graves" in question.lower():
@@ -187,26 +143,28 @@ def retrieve_context(question):
     return "\n".join(final_chunks)
 
 
+# ── CORRECTION DU PROMPT : EXIGER LE TEXTE DE LA BIBLE EN TOUTES LETTRES ──
+
 def ai_search(question):
-    """User-facing search."""
     context = retrieve_context(question)
 
     prompt = f"""
-    Only use the context and the question to answer the user question.
-    Answer strictly in French.
-    Include relevant Bible verses first then answer.
+    Utilisez le contexte fourni et vos connaissances théologiques pour répondre précisément à la question.
+    Répondez STRICTEMENT en français.
 
-    CRITICAL FORMATTING RULES:
-    - Do NOT use any asterisks (* or **) anywhere in your response.
-    - Do not use markdown bullet points. 
-    - To list Bible verses, simply start a new line for each verse (e.g., "Romains 5:12 : [Text]").
-    - Use clean, normal paragraph breaks for your explanation.
+    RÈGLE CRITIQUE ET ABSOLUE POUR LES PASSAGES BIBLIQUES :
+    Pour CHAQUE verset ou passage biblique que vous mentionnez ou utilisez pour étayer votre réponse, vous devez OBLIGATOIREMENT écrire son TEXTE INTÉGRAL ET MOT À MOT en français. Ne donnez JAMAIS uniquement les numéros de chapitres ou versets seuls (par exemple, n'écrivez pas juste "Ép 3:8-9", vous devez écrire "Éphésiens 3:8-9 : [Insérer ici le texte complet et mot à mot du verset]"). L'utilisateur doit pouvoir lire la Parole de Dieu écrite en entier au début de la réponse.
 
-    If the answer is not in the context say you are not able to answer.
+    RÈGLES STRICTES DE FORMATAGE :
+    - N'utilisez AUCUN astérisque (* ou **) nulle part dans le texte.
+    - N'utilisez aucun tiret ou puce de liste markdown.
+    - Écrivez chaque verset complet sur sa propre ligne isolée.
+    - Séparez clairement les citations bibliques initiales de votre explication doctrinale finale par un saut de ligne.
 
-    Context: {context}
+    Si les éléments de réponse ne figurent pas du tout dans le contexte, indiquez poliment que vous ne pouvez pas répondre.
 
-    Question: {question}
+    Contexte : {context}
+    Question : {question}
     """
 
     try:
@@ -216,8 +174,9 @@ def ai_search(question):
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=(
-                    "Act as a Theologian Expert to guide users based on church"
-                    " doctrine. Always write in plain text without markdown formatting."
+                    "Vous êtes un Expert Théologien dogmatique. Vous écrivez exclusivement en texte brut "
+                    "sans aucun symbole markdown (pas d'astérisques). Vous devez obligatoirement citer "
+                    "le texte intégral des versets de la Bible que vous invoquez."
                 ),
                 temperature=0.0,
             ),
@@ -230,7 +189,6 @@ def ai_search(question):
 
 
 def extract_claims(text):
-    """Extracts claims ensuring output is generated 100% in French."""
     prompt = f"""
     Lisez le document théologique suivant et extrayez les principales affirmations doctrinales qu'il contient.
     Retournez-les sous forme de liste numérotée en français. Maximum 10 affirmations.
@@ -260,7 +218,7 @@ def extract_claims(text):
 
 
 def validate_document(path):
-    """Generates comparison report strictly in French with fractionary grading style (X/5)."""
+    """Génère un rapport d'évaluation complet en français avec une note claire sur 5."""
     try:
         newdoc = PdfReader(path)
         text_parts = []
@@ -271,10 +229,7 @@ def validate_document(path):
         text = "\n".join(text_parts).strip()
 
         if not text:
-            return (
-                "⚠️ Erreur : Le document PDF ne contient pas de texte extractible. "
-                "Veuillez utiliser un fichier PDF textuel classique."
-            )
+            return "⚠️ Erreur : Le document PDF ne contient pas de texte extractible."
 
         if len(text) > 50000:
             text = text[:50000] + "\n\n[... Texte tronqué pour l'analyse ...]"
@@ -298,27 +253,24 @@ def validate_document(path):
         matched_doctrinal_context = []
         for claim in claims_list[:5]:
             db_context = retrieve_context(claim)
-            matched_doctrinal_context.append(
-                f"Pour l'affirmation: '{claim}'\nDoctrine établie correspondante:\n{db_context}"
-            )
+            matched_doctrinal_context.append(f"Pour l'affirmation: '{claim}'\nDoctrine établie:\n{db_context}")
 
         existing_doctrine = "\n\n---\n\n".join(matched_doctrinal_context)
 
         prompt = f"""
-        Comparez les affirmations du nouveau document avec la doctrine existante de l'église.
-        Attribuez une note globale d'alignement sous format fractionnaire obligatoire sur 5 (par exemple: 1/5, 3/5 ou 5/5), 
-        où 1/5 signifie une forte contradiction et 5/5 signifie un alignement parfait.
+        Comparez les affirmations du nouveau document avec la doctrine existante.
+        Attribuez obligatoirement une Note globale sous le format fractionnaire strict sur 5 (ex: 1/5, 3/5, 5/5).
 
-        Rédigez obligatoirement l'intégralité de votre réponse en FRANÇAIS en respectant exactement cette structure :
+        Rédigez TOUT votre rapport en FRANÇAIS selon cette structure exacte :
         Note globale : X/5
 
-        Analyse détaillée :
-        (Détaillez ici en français l'accord ou la contradiction pour chaque point extrait)
+        Analyse détaillée des points :
+        (Détaillez ici point par point en français la conformité ou les erreurs trouvées)
 
-        Affirmations du nouveau document :
+        Affirmations extraites :
         {ext_claims}
 
-        Doctrine de référence retrouvée en base :
+        Doctrine de référence :
         {existing_doctrine}
         """
 
@@ -328,8 +280,8 @@ def validate_document(path):
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=(
-                    "Agissez en tant qu'expert théologien biblique comparant les nouveaux enseignements "
-                    "à la doctrine établie. Rédigez tout votre rapport en français. Ne laissez aucun texte en anglais."
+                    "Agissez en tant que théologien expert. Rédigez tout votre rapport en français. "
+                    "N'utilisez aucune phrase en anglais. La note doit impérativement être écrite sous la forme X/5."
                 ),
                 temperature=0.0,
             ),
@@ -339,9 +291,9 @@ def validate_document(path):
     except errors.APIError as e:
         err_msg = getattr(e, 'message', str(e))
         err_code = getattr(e, 'code', getattr(e, 'status_code', 'unknown'))
-        return f"⚠️ Erreur API Gemini lors de la validation (Status {err_code}) : {err_msg}"
+        return f"⚠️ Erreur API Gemini (Status {err_code}) : {err_msg}"
     except Exception as e:
-        return f"⚠️ Erreur inattendue lors du traitement du document : {str(e)}"
+        return f"⚠️ Erreur lors du traitement : {str(e)}"
 
 
 def send_notification_email(document_name, validation_report):
@@ -354,18 +306,7 @@ def send_notification_email(document_name, validation_report):
     msg["To"] = receiver
     msg["Subject"] = f"Nouveau document en attente de validation : {document_name}"
 
-    body = f"""
-Bonjour,
-Un nouveau document a été soumis pour validation doctrinale.
-Document : {document_name}
-
-Rapport de validation :
-{validation_report}
-
-Veuillez vous connecter à l'application pour valider ce document.
-Cordialement,
-L'Assistant Doctrinal
-    """
+    body = f"Bonjour,\n\nUn document a été soumis.\n\nDocument : {document_name}\n\nRapport :\n{validation_report}"
     msg.attach(MIMEText(body, "plain"))
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.starttls()
@@ -398,9 +339,7 @@ def add_to_collection(path):
         batch_chunks = new_chunks[i: i + batch_size]
         batch_ids = new_ids[i: i + batch_size]
         batch_embeddings = model.encode(batch_chunks).tolist()
-        collection.add(
-            embeddings=batch_embeddings, ids=batch_ids, documents=batch_chunks
-        )
+        collection.add(embeddings=batch_embeddings, ids=batch_ids, documents=batch_chunks)
 
     chunks.extend(new_chunks)
     tokenized_chunks = [chunk.lower().split() for chunk in chunks]
@@ -412,7 +351,3 @@ def add_to_collection(path):
         pickle.dump(bm25, pkl_file)
 
     return len(new_chunks)
-
-
-if __name__ == "__main__":
-    pass

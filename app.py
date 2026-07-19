@@ -8,14 +8,12 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 
-# 1. Streamlit Page Configuration
 st.set_page_config(
     page_title="Assistant Doctrinal",
     page_icon="✝️",
     layout="wide"
 )
 
-# 2. Database Bootstrap Constants
 DB_ZIP = "doctrine_db.zip"
 DB_FOLDER = "chroma_doctrine_db"
 CHUNKS_FILE = "chunks_doctrine.pkl"
@@ -25,9 +23,8 @@ DB_DOWNLOAD_URL = "https://github.com/akirem20/Bible_ai_project/releases/downloa
 
 @st.cache_resource
 def bootstrap_database():
-    """Télécharge et extrait les fichiers de la base de données s'ils sont manquants sur le serveur Streamlit."""
     if not (os.path.exists(DB_FOLDER) and os.path.exists(CHUNKS_FILE) and os.path.exists(BM25_FILE)):
-        with st.spinner("⚡ Configuration de l'application : Restauration de la base de données doctrinale..."):
+        with st.spinner("⚡ Configuration initiale de la base doctrinale..."):
             headers = {}
             if "GITHUB_TOKEN" in st.secrets:
                 headers["Authorization"] = f"token {st.secrets['GITHUB_TOKEN']}"
@@ -37,13 +34,11 @@ def bootstrap_database():
                 with open(DB_ZIP, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
-
                 with zipfile.ZipFile(DB_ZIP, 'r') as zip_ref:
                     zip_ref.extractall(".")
-
                 os.remove(DB_ZIP)
             else:
-                st.error(f"Échec du téléchargement de la base de données. Code statut: {response.status_code}")
+                st.error("Impossible de récupérer la base de données globale.")
                 st.stop()
 
 
@@ -62,7 +57,7 @@ from main import (
 load_dotenv()
 
 # ============================================================
-# CUSTOM CSS STYLING
+# CSS APPLIQUÉ ET ENCAPSULÉ (ZÉRO CONFLIT AVEC LE BACKGROUND)
 # ============================================================
 st.markdown("""
 <style>
@@ -88,13 +83,7 @@ st.markdown("""
         align-items: center;
         gap: 0.5rem;
     }
-    .eyebrow::before {
-        content: '';
-        display: inline-block;
-        width: 2rem;
-        height: 1px;
-        background: #c9a84c;
-    }
+    .eyebrow::before { content: ''; display: inline-block; width: 2rem; height: 1px; background: #c9a84c; }
 
     .hero-title {
         font-family: 'Playfair Display', Georgia, serif;
@@ -103,54 +92,24 @@ st.markdown("""
         line-height: 1.1;
         color: #f0ece0;
         margin-bottom: 1.2rem;
-        opacity: 1;
     }
     .hero-title .gold-word { color: #c9a84c; }
-
-    .hero-subtitle {
-        font-family: 'Inter', sans-serif;
-        font-size: 0.95rem;
-        font-weight: 300;
-        color: #8896a7;
-        line-height: 1.8;
-        margin-bottom: 2rem;
-    }
-
+    .hero-subtitle { font-family: 'Inter', sans-serif; font-size: 0.95rem; font-weight: 300; color: #8896a7; line-height: 1.8; margin-bottom: 2rem; }
     .section-divider { border: none; border-top: 1px solid #1a2540; margin: 2rem 0; }
 
     .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; padding: 2rem 0; }
-    .feature-card {
-        background: #0f1828;
-        border: 1px solid #1a2540;
-        border-radius: 6px;
-        padding: 1.5rem;
-        transition: border-color 0.3s ease;
-    }
-    .feature-card:hover { border-color: #c9a84c; }
+    .feature-card { background: #0f1828; border: 1px solid #1a2540; border-radius: 6px; padding: 1.5rem; }
     .feature-icon { font-size: 1.3rem; margin-bottom: 0.75rem; }
     .feature-title { font-family: 'Playfair Display', Georgia, serif; font-size: 1rem; color: #f0ece0; margin-bottom: 0.5rem; }
     .feature-desc { font-family: 'Inter', sans-serif; font-size: 0.8rem; color: #8896a7; line-height: 1.7; }
-
-    .bottom-bar {
-        border-top: 1px solid #1a2540;
-        padding: 1.5rem 0;
-        font-family: 'Inter', sans-serif;
-        font-size: 0.8rem;
-        color: #8896a7;
-        text-align: center;
-        letter-spacing: 0.05em;
-        margin-top: 2rem;
-    }
 
     .stTextInput > div > div > input {
         background-color: #0f1828 !important;
         color: #f0ece0 !important;
         border: 1px solid #1a2540 !important;
         border-radius: 4px !important;
-        font-family: 'Inter', sans-serif !important;
         padding: 0.75rem 1rem !important;
     }
-    .stTextInput > div > div > input:focus { border-color: #c9a84c !important; }
     .stButton > button {
         background: #c9a84c !important;
         color: #080d1a !important;
@@ -158,12 +117,10 @@ st.markdown("""
         font-family: 'Inter', sans-serif !important;
         font-size: 0.8rem !important;
         font-weight: 600 !important;
-        letter-spacing: 0.1em !important;
         text-transform: uppercase !important;
     }
-    .stButton > button:hover { background: #b8943d !important; }
     .stTabs [data-baseweb="tab-list"] { background: transparent !important; border-bottom: 1px solid #1a2540 !important; }
-    .stTabs [data-baseweb="tab"] { color: #8896a7 !important; font-family: 'Inter', sans-serif !important; font-size: 0.8rem; letter-spacing: 0.1em; text-transform: uppercase; }
+    .stTabs [data-baseweb="tab"] { color: #8896a7 !important; font-family: 'Inter', sans-serif !important; font-size: 0.8rem; text-transform: uppercase; }
     .stTabs [aria-selected="true"] { color: #c9a84c !important; border-bottom: 2px solid #c9a84c !important; }
 
     .answer-card {
@@ -177,28 +134,30 @@ st.markdown("""
         line-height: 1.9;
     }
 
-    /* Admin Shared Unified Container Card style */
-    .admin-report-card {
-        background-color: #0f1828;
-        border: 1px solid #1a2540;
-        border-radius: 6px;
-        padding: 1.75rem;
-        margin-top: 1rem;
-        margin-bottom: 1.5rem;
-        color: #f0ece0;
-        font-family: 'Inter', sans-serif;
+    /* LE BLOC ADMIN UNIQUE : Fusionné et parfaitement aligné sur le fond bleu nuit */
+    .admin-unified-box {
+        background-color: #0f1828 !important;
+        border: 1px solid #1a2540 !important;
+        border-radius: 6px !important;
+        padding: 1.75rem !important;
+        margin-top: 1rem !important;
+        margin-bottom: 1.5rem !important;
+        color: #f0ece0 !important;
+        font-family: 'Inter', sans-serif !important;
     }
-
-    @media (max-width: 768px) {
-        .hero-section { padding: 2rem 1rem 1rem 1rem !important; }
-        .input-section { padding: 1.5rem 1rem 1.5rem 1rem !important; }
-        .features { grid-template-columns: 1fr !important; }
+    .admin-title-label {
+        color: #c9a84c !important;
+        font-weight: 600 !important;
+        font-size: 0.85rem !important;
+        letter-spacing: 0.1em !important;
+        text-transform: uppercase !important;
+        display: block !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================
-# LAYOUT
+# STRUCTURE COLONNES
 # ============================================================
 col_left, col_right = st.columns([1, 1], gap="large")
 
@@ -261,7 +220,7 @@ with col_right:
         st.success(st.session_state["doc_success_msg"])
         del st.session_state["doc_success_msg"]
 
-    # ── TAB 1 — QUESTION ──
+    # ── TAB 1 — QUESTION (USER) ──
     with tab1:
         question = st.text_input("Votre question", placeholder="Ex: Quel est le mystère de Dieu ?",
                                  key="input_question")
@@ -278,10 +237,10 @@ with col_right:
                 </div>
                 """, unsafe_allow_html=True)
 
-    # ── TAB 2 — DOCUMENT (USER SIDE) ──
+    # ── TAB 2 — DOCUMENT (USER) ──
     with tab2:
         st.markdown(
-            "<p style='font-family:Inter,sans-serif;font-size:0.875rem;color:#8896a7;margin-bottom:1rem;'>Le document sera analysé et envoyé au responsable pour approbation.</p>",
+            "<p style='font-family:Inter,sans-serif;font-size:0.875rem;color:#8896a7;margin-bottom:1rem;'>Le document sera envoyé au responsable pour examen doctrinal.</p>",
             unsafe_allow_html=True)
 
         if "uploader_key" not in st.session_state:
@@ -293,12 +252,11 @@ with col_right:
 
         if st.button("Soumettre pour validation", key="submit"):
             if uploaded_file and submitter_email:
-                with st.spinner("Traitement en cours..."):
+                with st.spinner("Traitement du fichier..."):
                     temp_path = f"temp_{uploaded_file.name}"
                     with open(temp_path, "wb") as temp_file:
                         temp_file.write(uploaded_file.getbuffer())
 
-                    # Extraction locale de l'aperçu du sujet en Français
                     try:
                         from pypdf import PdfReader
 
@@ -310,11 +268,10 @@ with col_right:
                                 extracted_text += page_text + "\n"
                         preview_content = extracted_text.strip()[:800]
                         if not preview_content:
-                            preview_content = "Contenu textuel brut introuvable (Document potentiellement scanné)."
+                            preview_content = "Texte brut introuvable (Scan ou PDF sans texte)."
                     except Exception as e:
-                        preview_content = f"Erreur de lecture de l'aperçu : {str(e)}"
+                        preview_content = f"Erreur aperçu : {str(e)}"
 
-                    # Génération du rapport de validation pur français
                     raw_report = validate_document(temp_path)
                     validation_report = raw_report.replace("**", "")
 
@@ -335,7 +292,7 @@ with col_right:
                 st.session_state["uploader_key"] += 1
                 st.rerun()
 
-    # ── TAB 3 — ADMIN (ADMIN SIDE) ──
+    # ── TAB 3 — ADMIN (CORRIGÉ SANS CODE BRUT ET INDENTATION BLANCHE) ──
     if tab3 is not None:
         with tab3:
             if "admin_logged_in" not in st.session_state:
@@ -351,20 +308,19 @@ with col_right:
                     msg = MIMEMultipart()
                     msg["From"] = sender
                     msg["To"] = receiver
-                    msg["Subject"] = "Code de connexion — Admin"
-                    msg.attach(MIMEText(f"Votre code : {code}", "plain"))
+                    msg["Subject"] = "Code de validation"
+                    msg.attach(MIMEText(f"Votre code d'accès : {code}", "plain"))
                     with smtplib.SMTP("smtp.gmail.com", 587) as server:
                         server.starttls()
                         server.login(sender, password)
                         server.sendmail(sender, receiver, msg.as_string())
-                    st.success("Code envoyé.")
+                    st.success("Code envoyé sur votre messagerie.")
 
-                entered_code = st.text_input("Code reçu", type="password", key="admin_code_input")
+                entered_code = st.text_input("Entrez le code", type="password", key="admin_code_input")
                 if st.button("Se connecter", key="login"):
                     if "login_code" in st.session_state and entered_code == st.session_state["login_code"]:
                         st.session_state["admin_logged_in"] = True
                         st.rerun()
-
             else:
                 col_h, col_l = st.columns([4, 1])
                 with col_h:
@@ -377,32 +333,18 @@ with col_right:
                 docs_a_valider = charger_documents_attente()
 
                 if not docs_a_valider:
-                    st.info("Aucun document en attente.")
+                    st.info("Aucun document en attente pour le moment.")
                 else:
                     for index, doc in enumerate(docs_a_valider):
                         st.markdown(f"📄 <b>Fichier :</b> {doc['nom']}", unsafe_allow_html=True)
                         st.markdown(f"📧 <b>Soumis par :</b> {doc['email']}", unsafe_allow_html=True)
 
-                        # Conversion des retours à la ligne pour l'affichage HTML propre
-                        sujet_html = doc.get("preview", "Aucun aperçu disponible.").replace("\n", "<br>")
+                        sujet_html = doc.get("preview", "Aperçu indisponible.").replace("\n", "<br>")
                         rapport_html = doc['rapport'].replace("\n", "<br>")
 
-                        # Boîte unique fusionnée — Fond natif du site avec texte blanc clair
-                        st.markdown(f"""
-                        <div class="admin-report-card">
-                            <span style="color: #c9a84c; font-weight: 600; font-size: 0.85rem; letter-spacing: 0.1em; text-transform: uppercase;">📝 Contenu / Sujet du document</span>
-                            <p style="color: #d4cfc4; font-size: 0.95rem; margin-top: 0.5rem; margin-bottom: 1.5rem; line-height: 1.6;">
-                                {sujet_html}
-                            </p>
-
-                            <hr style="border: none; border-top: 1px solid #1a2540; margin: 1.5rem 0;">
-
-                            <span style="color: #c9a84c; font-weight: 600; font-size: 0.85rem; letter-spacing: 0.1em; text-transform: uppercase;">📊 Rapport d'Analyse Théologique</span>
-                            <p style="color: #f0ece0; font-size: 0.95rem; margin-top: 0.5rem; line-height: 1.7;">
-                                {rapport_html}
-                            </p>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        # CORRECTION MAJEURE DE L'INDENTATION : Ligne collée à gauche pour supprimer la boîte blanche de code brut
+                        admin_box_html = f'<div class="admin-unified-box"><span class="admin-title-label">📝 Aperçu du Contenu (Français)</span><p style="color: #d4cfc4; font-size: 0.95rem; margin-top: 0.5rem; margin-bottom: 1.5rem; line-height: 1.6;">{sujet_html}</p><hr style="border: none; border-top: 1px solid #1a2540; margin: 1.5rem 0;"><span class="admin-title-label">📊 Évaluation & Rapport Théologique</span><p style="color: #f0ece0; font-size: 0.95rem; margin-top: 0.5rem; line-height: 1.7;">{rapport_html}</p></div>'
+                        st.markdown(admin_box_html, unsafe_allow_html=True)
 
                         col1, col2 = st.columns(2)
                         with col1:
@@ -423,6 +365,6 @@ with col_right:
                                     unsafe_allow_html=True)
 
 # ============================================================
-# BOTTOM BAR
+# BAS DE PAGE
 # ============================================================
 st.markdown('<div class="bottom-bar">Assistant Doctrinal — Gestion des Écritures</div>', unsafe_allow_html=True)
