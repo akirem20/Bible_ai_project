@@ -12,8 +12,8 @@ import chromadb
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from google.genai import errors  # Handles and exposes API errors clearly
-from rank_bm25 import BM25Okapi  # Rebuilds BM25 when new PDFs are uploaded
+from google.genai import errors
+from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
 load_dotenv()
@@ -51,7 +51,6 @@ def charger_documents_attente():
 def sauvegarder_document_attente(nom, email, rapport, temp_path, preview=""):
     """Enregistre un nouveau document soumis dans le fichier JSON local avec son aperçu textuel."""
     docs = charger_documents_attente()
-    # Évite les doublons si le même fichier est soumis à nouveau
     docs = [d for d in docs if d["nom"] != nom]
 
     docs.append({
@@ -78,9 +77,7 @@ def supprimer_document_attente(nom):
 # ── FONCTIONS RAG ET THÉOLOGIQUES EXISTANTES ──
 
 def get_genai_client():
-    """Safely retrieves the Gemini API Key from all possible environments
-    (local env, Streamlit Secrets, GEMINI_API_KEY, or GOOGLE_API_KEY)
-    """
+    """Safely retrieves the Gemini API Key from all possible environments."""
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
     if not api_key:
@@ -133,9 +130,7 @@ def expand_question(question):
 
 
 def retrieve_context(question):
-    """Local hybrid search (Semantic + BM25) to extract relevant database text.
-    Requires ZERO Gemini API calls.
-    """
+    """Local hybrid search (Semantic + BM25) to extract relevant database text."""
     expanded = expand_question(question)
     normalized_question = expanded.lower().strip()
 
@@ -161,24 +156,15 @@ def retrieve_context(question):
     # Combine
     combined = list(dict.fromkeys(s_search + h_search))[:20]
 
-    # Force inject BEFORE Cross-Encoder
     if "différents types" in question.lower():
-        expiable_chunks = [
-            c for c in chunks if "expiable" in c.lower()
-        ][:3]
+        expiable_chunks = [c for c in chunks if "expiable" in c.lower()][:3]
         combined = list(dict.fromkeys(expiable_chunks + combined))[:20]
 
     if "souillures les plus graves" in question.lower():
         grave_chunks = [
-            c
-            for c in chunks
-            if "souillure" in c.lower()
-               and (
-                       "sang" in c.lower()
-                       or "mort" in c.lower()
-                       or "nombre 19" in c.lower()
-                       or "purifi" in c.lower()
-               )
+            c for c in chunks
+            if "souillure" in c.lower() and (
+                        "sang" in c.lower() or "mort" in c.lower() or "nombre 19" in c.lower() or "purifi" in c.lower())
         ][:5]
         combined = list(dict.fromkeys(grave_chunks + combined))[:20]
 
@@ -190,18 +176,11 @@ def retrieve_context(question):
     )[:5]
     final_chunks = [combined[i] for i in top_indice_cross]
 
-    # Force into final context AFTER Cross-Encoder
     if "souillures les plus graves" in question.lower():
         grave_chunks = [
-            c
-            for c in chunks
-            if "souillure" in c.lower()
-               and (
-                       "sang" in c.lower()
-                       or "mort" in c.lower()
-                       or "nombre 19" in c.lower()
-                       or "purifi" in c.lower()
-               )
+            c for c in chunks
+            if "souillure" in c.lower() and (
+                        "sang" in c.lower() or "mort" in c.lower() or "nombre 19" in c.lower() or "purifi" in c.lower())
         ][:3]
         final_chunks = list(dict.fromkeys(grave_chunks + final_chunks))[:5]
 
@@ -209,9 +188,7 @@ def retrieve_context(question):
 
 
 def ai_search(question):
-    """User-facing search.
-    Uses local database retrieval, then calls Gemini once to generate an answer without Markdown symbols.
-    """
+    """User-facing search."""
     context = retrieve_context(question)
 
     prompt = f"""
@@ -253,11 +230,11 @@ def ai_search(question):
 
 
 def extract_claims(text):
+    """Extracts claims ensuring output is generated 100% in French."""
     prompt = f"""
-    Read the following theological document and extract 
-    the main doctrinal claims it makes.
-    Return them as a numbered list. Maximum 10 claims. 
-    Be concise and precise.
+    Lisez le document théologique suivant et extrayez les principales affirmations doctrinales qu'il contient.
+    Retournez-les sous forme de liste numérotée en français. Maximum 10 affirmations.
+    Soyez concis et précis.
 
     Document:
     {text}
@@ -269,8 +246,8 @@ def extract_claims(text):
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=(
-                    "You are a biblical theologian extracting doctrinal claims"
-                    " from documents."
+                    "Vous êtes un théologien biblique expert. Votre rôle est d'extraire les affirmations "
+                    "doctrinales. Vous devez rédiger votre réponse exclusivement en français."
                 ),
                 temperature=0.0,
             ),
@@ -279,13 +256,11 @@ def extract_claims(text):
     except errors.APIError as e:
         err_msg = getattr(e, 'message', str(e))
         err_code = getattr(e, 'code', getattr(e, 'status_code', 'unknown'))
-        raise RuntimeError(f"Gemini API Error during extraction (Status {err_code}): {err_msg}") from e
+        raise RuntimeError(f"Erreur API Gemini lors de l'extraction ({err_code}): {err_msg}") from e
 
 
 def validate_document(path):
-    """Reads PDF, extracts claims, retrieves matching doctrines locally,
-    and generates a detailed comparison report. Handles errors gracefully.
-    """
+    """Generates comparison report strictly in French with fractionary grading style (X/5)."""
     try:
         newdoc = PdfReader(path)
         text_parts = []
@@ -295,25 +270,20 @@ def validate_document(path):
                 text_parts.append(page_text)
         text = "\n".join(text_parts).strip()
 
-        # Guardrail: Check for scanned/blank PDFs
         if not text:
             return (
                 "⚠️ Erreur : Le document PDF ne contient pas de texte extractible. "
-                "Il s'agit probablement d'un document numérisé (scan). "
                 "Veuillez utiliser un fichier PDF textuel classique."
             )
 
-        # Payload threshold limit check
         if len(text) > 50000:
             text = text[:50000] + "\n\n[... Texte tronqué pour l'analyse ...]"
 
-        # Safe Extraction Call
         try:
             ext_claims = extract_claims(text)
         except Exception as e:
             return f"⚠️ Erreur lors de l'extraction des affirmations : {str(e)}"
 
-        # Parse claims safely
         claims_list = []
         for line in ext_claims.split("\n"):
             line = line.strip()
@@ -325,41 +295,41 @@ def validate_document(path):
         if not claims_list:
             claims_list = [line.strip() for line in ext_claims.split("\n") if line.strip()][:5]
 
-        # Match claims purely locally via your hybrid search database
         matched_doctrinal_context = []
         for claim in claims_list[:5]:
             db_context = retrieve_context(claim)
             matched_doctrinal_context.append(
-                f"For Claim: '{claim}'\nEstablished Doctrine Chunks:\n{db_context}"
+                f"Pour l'affirmation: '{claim}'\nDoctrine établie correspondante:\n{db_context}"
             )
 
         existing_doctrine = "\n\n---\n\n".join(matched_doctrinal_context)
 
         prompt = f"""
-        Compare the new document's claims against the existing church doctrine retrieved.
-        Score the alignment from 1 to 5, where 1 means strong contradiction 
-        and 5 means perfect alignment.
+        Comparez les affirmations du nouveau document avec la doctrine existante de l'église.
+        Attribuez une note globale d'alignement sous format fractionnaire obligatoire sur 5 (par exemple: 1/5, 3/5 ou 5/5), 
+        où 1/5 signifie une forte contradiction et 5/5 signifie un alignement parfait.
 
-        Provide your answer in this format:
-        Score: (number 1-5)
-        Explanation: (2-3 sentences explaining agreement or contradiction)
+        Rédigez obligatoirement l'intégralité de votre réponse en FRANÇAIS en respectant exactement cette structure :
+        Note globale : X/5
 
-        New document claims:
+        Analyse détaillée :
+        (Détaillez ici en français l'accord ou la contradiction pour chaque point extrait)
+
+        Affirmations du nouveau document :
         {ext_claims}
 
-        Existing doctrine retrieved:
+        Doctrine de référence retrouvée en base :
         {existing_doctrine}
         """
 
-        # Safe Comparison Report Call
         client = get_genai_client()
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=(
-                    "Act as a biblical Theologian Expert comparing new teaching"
-                    " against established doctrine."
+                    "Agissez en tant qu'expert théologien biblique comparant les nouveaux enseignements "
+                    "à la doctrine établie. Rédigez tout votre rapport en français. Ne laissez aucun texte en anglais."
                 ),
                 temperature=0.0,
             ),
@@ -382,39 +352,29 @@ def send_notification_email(document_name, validation_report):
     msg = MIMEMultipart()
     msg["From"] = sender
     msg["To"] = receiver
-    msg["Subject"] = (
-        f"Nouveau document en attente de validation : {document_name}"
-    )
+    msg["Subject"] = f"Nouveau document en attente de validation : {document_name}"
 
     body = f"""
 Bonjour,
-
 Un nouveau document a été soumis pour validation doctrinale.
-
 Document : {document_name}
 
 Rapport de validation :
 {validation_report}
 
-Veuillez vous connecter à l'application pour approuver ou rejeter ce document.
-
+Veuillez vous connecter à l'application pour valider ce document.
 Cordialement,
 L'Assistant Doctrinal
     """
-
     msg.attach(MIMEText(body, "plain"))
-
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.starttls()
         server.login(sender, password)
         server.sendmail(sender, receiver, msg.as_string())
 
-    print(f"Email sent to {receiver}")
-
 
 def add_to_collection(path):
     global chunks, bm25
-
     newdoc = PdfReader(path)
     text_parts = []
     for page in newdoc.pages:
@@ -448,19 +408,11 @@ def add_to_collection(path):
 
     with open("chunks_doctrine.pkl", "wb") as pkl_file:
         pickle.dump(chunks, pkl_file)
-
     with open("bm25_doctrine.pkl", "wb") as pkl_file:
         pickle.dump(bm25, pkl_file)
 
-    print(
-        f"Added {len(new_chunks)} new chunks from {path} and updated BM25"
-        " index."
-    )
     return len(new_chunks)
 
 
 if __name__ == "__main__":
-    answer = ai_search(
-        "Quelle sont les souillures les plus graves ? Et comment les éviter ?"
-    )
-    print(answer)
+    pass
