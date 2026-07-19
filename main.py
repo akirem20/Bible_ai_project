@@ -1,4 +1,5 @@
 import os
+import json
 import pickle
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -17,6 +18,9 @@ from sentence_transformers import CrossEncoder, SentenceTransformer
 
 load_dotenv()
 
+# Fichier de persistance local pour les documents en attente
+PENDING_DOCS_FILE = "documents_attente.json"
+
 # Load from disk
 with open("chunks_doctrine.pkl", "rb") as f:
     chunks = pickle.load(f)
@@ -30,6 +34,47 @@ model_reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 db_client = chromadb.PersistentClient(path="./chroma_doctrine_db")
 collection = db_client.get_or_create_collection(name="bible_doctrine_v3")
 
+
+# ── FONCTIONS DE GESTION DE LA FILE D'ATTENTE (JSON) ──
+
+def charger_documents_attente():
+    """Charge la liste des documents en attente depuis le fichier JSON local."""
+    if not os.path.exists(PENDING_DOCS_FILE):
+        return []
+    try:
+        with open(PENDING_DOCS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def sauvegarder_document_attente(nom, email, rapport, temp_path):
+    """Enregistre un nouveau document soumis dans le fichier JSON local."""
+    docs = charger_documents_attente()
+    # Évite les doublons si le même fichier est soumis à nouveau
+    docs = [d for d in docs if d["nom"] != nom]
+
+    docs.append({
+        "nom": nom,
+        "email": email,
+        "rapport": rapport,
+        "temp_path": temp_path
+    })
+
+    with open(PENDING_DOCS_FILE, "w", encoding="utf-8") as f:
+        json.dump(docs, f, ensure_ascii=False, indent=4)
+
+
+def supprimer_document_attente(nom):
+    """Supprime un document de la file d'attente JSON après traitement (Approbation/Rejet)."""
+    docs = charger_documents_attente()
+    docs = [d for d in docs if d["nom"] != nom]
+
+    with open(PENDING_DOCS_FILE, "w", encoding="utf-8") as f:
+        json.dump(docs, f, ensure_ascii=False, indent=4)
+
+
+# ── FONCTIONS RAG ET THÉOLOGIQUES EXISTANTES ──
 
 def get_genai_client():
     """Safely retrieves the Gemini API Key from all possible environments
@@ -252,7 +297,7 @@ def validate_document(path):
         # Guardrail: Check for scanned/blank PDFs
         if not text:
             return (
-                "⚠️ **Erreur :** Le document PDF ne contient pas de texte extractible. "
+                "⚠️ Erreur : Le document PDF ne contient pas de texte extractible. "
                 "Il s'agit probablement d'un document numérisé (scan). "
                 "Veuillez utiliser un fichier PDF textuel classique."
             )
@@ -265,7 +310,7 @@ def validate_document(path):
         try:
             ext_claims = extract_claims(text)
         except Exception as e:
-            return f"⚠️ **Erreur lors de l'extraction des affirmations :** {str(e)}"
+            return f"⚠️ Erreur lors de l'extraction des affirmations : {str(e)}"
 
         # Parse claims safely
         claims_list = []
@@ -323,9 +368,9 @@ def validate_document(path):
     except errors.APIError as e:
         err_msg = getattr(e, 'message', str(e))
         err_code = getattr(e, 'code', getattr(e, 'status_code', 'unknown'))
-        return f"⚠️ **Erreur API Gemini lors de la validation (Status {err_code}) :** {err_msg}"
+        return f"⚠️ Erreur API Gemini lors de la validation (Status {err_code}) : {err_msg}"
     except Exception as e:
-        return f"⚠️ **Erreur inattendue lors du traitement du document :** {str(e)}"
+        return f"⚠️ Erreur inattendue lors du traitement du document : {str(e)}"
 
 
 def send_notification_email(document_name, validation_report):

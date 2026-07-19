@@ -2,6 +2,11 @@ import streamlit as st
 import os
 import zipfile
 import requests
+import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from dotenv import load_dotenv
 
 # 1. Streamlit Page Configuration (Must be the very first Streamlit command)
 st.set_page_config(
@@ -47,12 +52,15 @@ def bootstrap_database():
 bootstrap_database()
 
 # 4. Import local assets and standard library dependencies safely
-from main import ai_search, validate_document, add_to_collection, send_notification_email
-import random
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from dotenv import load_dotenv
+from main import (
+    ai_search,
+    validate_document,
+    add_to_collection,
+    send_notification_email,
+    sauvegarder_document_attente,
+    charger_documents_attente,
+    supprimer_document_attente
+)
 
 load_dotenv()
 
@@ -249,38 +257,14 @@ st.markdown("""
         margin: 1rem 0 1.5rem 0;
     }
 
-    /* ============================================================
-       MOBILE INTERFACE ADJUSTMENTS (Screens under 768px)
-       ============================================================ */
     @media (max-width: 768px) {
-        .hero-section {
-            padding: 2rem 1rem 1rem 1rem !important;
-        }
-        .input-section {
-            padding: 1.5rem 1rem 1.5rem 1rem !important;
-        }
-        .hero-title {
-            font-size: clamp(1.8rem, 8vw, 2.3rem) !important;
-            margin-bottom: 1rem !important;
-        }
-        .hero-subtitle {
-            font-size: 0.85rem !important;
-            line-height: 1.6 !important;
-            margin-bottom: 1.5rem !important;
-        }
-        .features {
-            grid-template-columns: 1fr !important; /* Stack cards vertically */
-            gap: 1rem !important;
-            padding: 1rem 0 !important;
-        }
-        .feature-card {
-            padding: 1.25rem !important;
-        }
-        .answer-card {
-            padding: 1.25rem !important;
-            font-size: 0.85rem !important;
-            line-height: 1.7 !important;
-        }
+        .hero-section { padding: 2rem 1rem 1rem 1rem !important; }
+        .input-section { padding: 1.5rem 1rem 1.5rem 1rem !important; }
+        .hero-title { font-size: clamp(1.8rem, 8vw, 2.3rem) !important; margin-bottom: 1rem !important; }
+        .hero-subtitle { font-size: 0.85rem !important; line-height: 1.6 !important; margin-bottom: 1.5rem !important; }
+        .features { grid-template-columns: 1fr !important; gap: 1rem !important; padding: 1rem 0 !important; }
+        .feature-card { padding: 1.25rem !important; }
+        .answer-card { padding: 1.25rem !important; font-size: 0.85rem !important; line-height: 1.7 !important; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -329,7 +313,7 @@ with col_right:
     st.markdown("""
     <div class="input-section">
         <div style="font-family: Inter, sans-serif; font-size: 0.7rem; letter-spacing: 0.2em; text-transform: uppercase; color: #c9a84c; margin-bottom: 0.5rem;">
-            Question doctrinal
+            Question doctrinale
         </div>
         <div style="font-family: Playfair Display, Georgia, serif; font-size: 1.4rem; color: #f0ece0; margin-bottom: 0.5rem;">
             Commencez ici
@@ -353,7 +337,8 @@ with col_right:
     with tab1:
         question = st.text_input(
             "Votre question",
-            placeholder="Ex: Quel est le mystère de Dieu selon la Bible ?"
+            placeholder="Ex: Quel est le mystère de Dieu selon la Bible ?",
+            key="input_question"
         )
 
         if st.button("Rechercher", key="search"):
@@ -377,8 +362,8 @@ with col_right:
             "<p style='font-family:Inter,sans-serif;font-size:0.875rem;color:#8896a7;margin-bottom:1rem;'>Le document sera analysé et un rapport sera envoyé au responsable pour approbation.</p>",
             unsafe_allow_html=True
         )
-        uploaded_file = st.file_uploader("Choisir un fichier PDF", type=["pdf"])
-        submitter_email = st.text_input("Votre adresse email", placeholder="votre@email.com")
+        uploaded_file = st.file_uploader("Choisir un fichier PDF", type=["pdf"], key="pdf_uploader")
+        submitter_email = st.text_input("Votre adresse email", placeholder="votre@email.com", key="input_email")
 
         if st.button("Soumettre pour validation", key="submit"):
             if uploaded_file and submitter_email:
@@ -386,11 +371,14 @@ with col_right:
                     temp_path = f"temp_{uploaded_file.name}"
                     with open(temp_path, "wb") as temp_file:
                         temp_file.write(uploaded_file.getbuffer())
-                    validation_report = validate_document(temp_path)
-                    st.session_state["pending_doc"] = temp_path
-                    st.session_state["pending_report"] = validation_report
-                    st.session_state["pending_name"] = uploaded_file.name
-                    st.session_state["submitter_email"] = submitter_email
+
+                    # Récupération et nettoyage immédiat des astérisques du rapport
+                    raw_report = validate_document(temp_path)
+                    validation_report = raw_report.replace("**", "")
+
+                    # Sauvegarde persistante dans la base JSON locale pour l'Admin
+                    sauvegarder_document_attente(uploaded_file.name, submitter_email, validation_report, temp_path)
+
                 send_notification_email(uploaded_file.name, validation_report)
                 st.success("Document soumis. Le responsable a été notifié.")
                 st.markdown("#### Rapport de validation")
@@ -427,7 +415,7 @@ with col_right:
                         server.sendmail(sender, receiver, msg.as_string())
                     st.success("Code envoyé.")
 
-                entered_code = st.text_input("Code reçu par email", placeholder="123456")
+                entered_code = st.text_input("Code reçu par email", placeholder="123456", key="admin_code_input")
                 if st.button("Se connecter", key="login"):
                     if "login_code" in st.session_state and entered_code == st.session_state["login_code"]:
                         st.session_state["admin_logged_in"] = True
@@ -446,46 +434,65 @@ with col_right:
                             del st.session_state["login_code"]
                         st.rerun()
 
-                if "pending_doc" not in st.session_state:
+                # Lecture de la file d'attente partagée depuis le fichier JSON
+                docs_a_valider = charger_documents_attente()
+
+                if not docs_a_valider:
                     st.info("Aucun document en attente de validation.")
                 else:
-                    st.markdown(f"**Document :** {st.session_state['pending_name']}")
-                    st.write(st.session_state["pending_report"])
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("✅ Approuver", key="approve"):
-                            with st.spinner("Indexation..."):
-                                chunks_added = add_to_collection(st.session_state["pending_doc"])
-                            if os.path.exists(st.session_state["pending_doc"]):
-                                os.remove(st.session_state["pending_doc"])
-                            for key in ["pending_doc", "pending_report", "pending_name"]:
-                                if key in st.session_state:
-                                    del st.session_state[key]
-                            st.success(f"Approuvé — {chunks_added} chunks indexés.")
-                    with col2:
-                        if st.button("❌ Rejeter", key="reject"):
-                            if "submitter_email" in st.session_state:
+                    # Affichage propre en boucle sans astérisques Markdown
+                    for index, doc in enumerate(docs_a_valider):
+                        st.markdown(f"📄 <b>Document :</b> {doc['nom']}", unsafe_allow_html=True)
+                        st.markdown(f"📧 <b>Soumis par :</b> {doc['email']}", unsafe_allow_html=True)
+                        st.text_area("Rapport d'analyse", value=doc['rapport'], height=250, disabled=True,
+                                     key=f"report_area_{index}")
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            if st.button("✅ Approuver", key=f"approve_{index}"):
+                                with st.spinner("Indexation du document..."):
+                                    if os.path.exists(doc['temp_path']):
+                                        chunks_added = add_to_collection(doc['temp_path'])
+                                        os.remove(doc['temp_path'])
+                                        st.success(f"Approuvé — {chunks_added} segments indexés dans la base globale.")
+                                    else:
+                                        st.error("Le fichier temporaire est introuvable sur le serveur.")
+                                supprimer_document_attente(doc['nom'])
+                                st.rerun()
+
+                        with col2:
+                            if st.button("❌ Rejeter", key=f"reject_{index}"):
                                 sender = os.getenv("GMAIL_ADDRESS")
                                 password_smtp = os.getenv("GMAIL_APP_PASSWORD")
-                                receiver = st.session_state["submitter_email"]
-                                doc_name = st.session_state["pending_name"]
+                                receiver = doc["email"]
+                                doc_name = doc["nom"]
+
                                 msg = MIMEMultipart()
                                 msg["From"] = sender
                                 msg["To"] = receiver
                                 msg["Subject"] = f"Document rejeté : {doc_name}"
                                 msg.attach(MIMEText(
-                                    f"Bonjour,\n\nVotre document « {doc_name} » n'a pas été approuvé.\n\nCordialement,\nL'Assistant Doctrinal",
-                                    "plain"))
-                                with smtplib.SMTP("smtp.gmail.com", 587) as server:
-                                    server.starttls()
-                                    server.login(sender, password_smtp)
-                                    server.sendmail(sender, receiver, msg.as_string())
-                            if os.path.exists(st.session_state["pending_doc"]):
-                                os.remove(st.session_state["pending_doc"])
-                            for key in ["pending_doc", "pending_report", "pending_name", "submitter_email"]:
-                                if key in st.session_state:
-                                    del st.session_state[key]
-                            st.warning("Document rejeté. L'auteur a été notifié.")
+                                    f"Bonjour,\n\nVotre document « {doc_name} » n'a pas été approuvé par le comité doctrinal.\n\nCordialement,\nL'Assistant Doctrinal",
+                                    "plain"
+                                ))
+                                try:
+                                    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                                        server.starttls()
+                                        server.login(sender, password_smtp)
+                                        server.sendmail(sender, receiver, msg.as_string())
+                                except Exception as e:
+                                    st.error(f"Erreur d'envoi d'email au soumetteur: {e}")
+
+                                if os.path.exists(doc['temp_path']):
+                                    os.remove(doc['temp_path'])
+
+                                supprimer_document_attente(doc['nom'])
+                                st.warning("Document rejeté. L'auteur a été notifié par email.")
+                                st.rerun()
+
+                        st.markdown("<hr style='border-top: 1px dashed #1a2540; margin: 2rem 0;'>",
+                                    unsafe_allow_html=True)
 
 # ============================================================
 # BOTTOM BAR
