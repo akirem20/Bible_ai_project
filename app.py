@@ -292,7 +292,7 @@ with col_right:
                 st.session_state["uploader_key"] += 1
                 st.rerun()
 
-    # ── TAB 3 — ADMIN (CORRIGÉ SANS CODE BRUT ET INDENTATION BLANCHE) ──
+    # ── TAB 3 — ADMIN (AVEC NOTIFICATION DE SUCCÈS D'APPROBATION EN HAUT DE LA PAGE) ──
     if tab3 is not None:
         with tab3:
             if "admin_logged_in" not in st.session_state:
@@ -330,6 +330,11 @@ with col_right:
                         st.session_state["admin_logged_in"] = False
                         st.rerun()
 
+                # Affiche le bandeau de confirmation d'approbation s'il existe
+                if "admin_approval_msg" in st.session_state:
+                    st.success(st.session_state["admin_approval_msg"])
+                    del st.session_state["admin_approval_msg"]
+
                 docs_a_valider = charger_documents_attente()
 
                 if not docs_a_valider:
@@ -350,8 +355,15 @@ with col_right:
                         with col1:
                             if st.button("✅ Approuver", key=f"approve_{index}"):
                                 if os.path.exists(doc['temp_path']):
-                                    add_to_collection(doc['temp_path'])
+                                    # Récupération et stockage du nombre de fragments indexés
+                                    nb_fragments = add_to_collection(doc['temp_path'])
                                     os.remove(doc['temp_path'])
+                                    st.session_state[
+                                        "admin_approval_msg"] = f"🎉 Le document '{doc['nom']}' a été validé et indexé avec succès ! (+{nb_fragments} fragments ajoutés)."
+                                else:
+                                    st.session_state[
+                                        "admin_approval_msg"] = f"🎉 Le document '{doc['nom']}' a été traité avec succès."
+
                                 supprimer_document_attente(doc['nom'])
                                 st.rerun()
                         with col2:
@@ -359,6 +371,8 @@ with col_right:
                                 if os.path.exists(doc['temp_path']):
                                     os.remove(doc['temp_path'])
                                 supprimer_document_attente(doc['nom'])
+                                st.session_state[
+                                    "admin_approval_msg"] = f"❌ Le document '{doc['nom']}' a été rejeté et supprimé de la file d'attente."
                                 st.rerun()
 
                         st.markdown("<hr style='border-top: 1px dashed #1a2540; margin: 2rem 0;'>",
