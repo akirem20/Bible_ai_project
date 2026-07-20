@@ -227,15 +227,18 @@ with col_right:
         if st.button("Rechercher", key="search"):
             if question:
                 with st.spinner("Recherche dans les Écritures..."):
-                    answer = ai_search(question)
-                answer_html = answer.replace("\n", "<br>")
-                st.markdown(f"""
-                <div class="answer-card">
-                    <div class="answer-label">✝ Réponse doctrinale</div>
-                    <hr style="border:none; border-top:1px solid #1a2540; margin:1rem 0 1.5rem 0;">
-                    {answer_html}
-                </div>
-                """, unsafe_allow_html=True)
+                    try:
+                        answer = ai_search(question)
+                        answer_html = answer.replace("\n", "<br>")
+                        st.markdown(f"""
+                        <div class="answer-card">
+                            <div class="answer-label">✝ Réponse doctrinale</div>
+                            <hr style="border:none; border-top:1px solid #1a2540; margin:1rem 0 1.5rem 0;">
+                            {answer_html}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"❌ Erreur lors du traitement de la recherche : {str(e)}")
 
     # ── TAB 2 — DOCUMENT (USER) ──
     with tab2:
@@ -252,47 +255,50 @@ with col_right:
 
         if st.button("Soumettre pour validation", key="submit"):
             if uploaded_file and submitter_email:
-                with st.spinner("Traitement du fichier..."):
-                    temp_path = f"temp_{uploaded_file.name}"
-                    with open(temp_path, "wb") as temp_file:
-                        temp_file.write(uploaded_file.getbuffer())
+                try:
+                    with st.spinner("Traitement du fichier..."):
+                        temp_path = f"temp_{uploaded_file.name}"
+                        with open(temp_path, "wb") as temp_file:
+                            temp_file.write(uploaded_file.getbuffer())
+
+                        try:
+                            from pypdf import PdfReader
+
+                            reader = PdfReader(temp_path)
+                            extracted_text = ""
+                            for page in reader.pages[:2]:
+                                page_text = page.extract_text()
+                                if page_text:
+                                    extracted_text += page_text + "\n"
+                            preview_content = extracted_text.strip()[:800]
+                            if not preview_content:
+                                preview_content = "Texte brut introuvable (Scan ou PDF sans texte)."
+                        except Exception as e:
+                            preview_content = f"Erreur aperçu : {str(e)}"
+
+                        raw_report = validate_document(temp_path)
+                        validation_report = raw_report.replace("**", "")
+
+                        sauvegarder_document_attente(
+                            uploaded_file.name,
+                            submitter_email,
+                            validation_report,
+                            temp_path,
+                            preview_content
+                        )
 
                     try:
-                        from pypdf import PdfReader
+                        send_notification_email(uploaded_file.name, validation_report)
+                    except Exception:
+                        pass
 
-                        reader = PdfReader(temp_path)
-                        extracted_text = ""
-                        for page in reader.pages[:2]:
-                            page_text = page.extract_text()
-                            if page_text:
-                                extracted_text += page_text + "\n"
-                        preview_content = extracted_text.strip()[:800]
-                        if not preview_content:
-                            preview_content = "Texte brut introuvable (Scan ou PDF sans texte)."
-                    except Exception as e:
-                        preview_content = f"Erreur aperçu : {str(e)}"
+                    st.session_state["doc_success_msg"] = "Document soumis avec succès. Le responsable a été notifié."
+                    st.session_state["uploader_key"] += 1
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Erreur lors de la soumission du document : {str(e)}")
 
-                    raw_report = validate_document(temp_path)
-                    validation_report = raw_report.replace("**", "")
-
-                    sauvegarder_document_attente(
-                        uploaded_file.name,
-                        submitter_email,
-                        validation_report,
-                        temp_path,
-                        preview_content
-                    )
-
-                try:
-                    send_notification_email(uploaded_file.name, validation_report)
-                except Exception:
-                    pass
-
-                st.session_state["doc_success_msg"] = "Document soumis avec succès. Le responsable a été notifié."
-                st.session_state["uploader_key"] += 1
-                st.rerun()
-
-    # ── TAB 3 — ADMIN (AVEC NOTIFICATION DE SUCCÈS D'APPROBATION EN HAUT DE LA PAGE) ──
+    # ── TAB 3 — ADMIN (SÉCURISÉ ET AVEC SYNTAXE EXCEPT CORRIGÉE) ──
     if tab3 is not None:
         with tab3:
             if "admin_logged_in" not in st.session_state:
@@ -300,21 +306,24 @@ with col_right:
 
             if not st.session_state["admin_logged_in"]:
                 if st.button("Envoyer un code de connexion", key="send_code"):
-                    code = str(random.randint(100000, 999999))
-                    st.session_state["login_code"] = code
-                    sender = os.getenv("GMAIL_ADDRESS")
-                    password = os.getenv("GMAIL_APP_PASSWORD")
-                    receiver = os.getenv("FATHER_EMAIL")
-                    msg = MIMEMultipart()
-                    msg["From"] = sender
-                    msg["To"] = receiver
-                    msg["Subject"] = "Code de validation"
-                    msg.attach(MIMEText(f"Votre code d'accès : {code}", "plain"))
-                    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-                        server.starttls()
-                        server.login(sender, password)
-                        server.sendmail(sender, receiver, msg.as_string())
-                    st.success("Code envoyé sur votre messagerie.")
+                    try:
+                        code = str(random.randint(100000, 999999))
+                        st.session_state["login_code"] = code
+                        sender = os.getenv("GMAIL_ADDRESS")
+                        password = os.getenv("GMAIL_APP_PASSWORD")
+                        receiver = os.getenv("FATHER_EMAIL")
+                        msg = MIMEMultipart()
+                        msg["From"] = sender
+                        msg["To"] = receiver
+                        msg["Subject"] = "Code de validation"
+                        msg.attach(MIMEText(f"Votre code d'accès : {code}", "plain"))
+                        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                            server.starttls()
+                            server.login(sender, password)
+                            server.sendmail(sender, receiver, msg.as_string())
+                        st.success("Code envoyé sur votre messagerie.")
+                    except Exception as e:
+                        st.error(f"❌ Impossible d'envoyer le code d'authentification : {str(e)}")
 
                 entered_code = st.text_input("Entrez le code", type="password", key="admin_code_input")
                 if st.button("Se connecter", key="login"):
@@ -330,7 +339,7 @@ with col_right:
                         st.session_state["admin_logged_in"] = False
                         st.rerun()
 
-                # Affiche le bandeau de confirmation d'approbation s'il existe
+                # Bandeau d'information d'approbation globale
                 if "admin_approval_msg" in st.session_state:
                     st.success(st.session_state["admin_approval_msg"])
                     del st.session_state["admin_approval_msg"]
@@ -347,33 +356,38 @@ with col_right:
                         sujet_html = doc.get("preview", "Aperçu indisponible.").replace("\n", "<br>")
                         rapport_html = doc['rapport'].replace("\n", "<br>")
 
-                        # CORRECTION MAJEURE DE L'INDENTATION : Ligne collée à gauche pour supprimer la boîte blanche de code brut
                         admin_box_html = f'<div class="admin-unified-box"><span class="admin-title-label">📝 Aperçu du Contenu (Français)</span><p style="color: #d4cfc4; font-size: 0.95rem; margin-top: 0.5rem; margin-bottom: 1.5rem; line-height: 1.6;">{sujet_html}</p><hr style="border: none; border-top: 1px solid #1a2540; margin: 1.5rem 0;"><span class="admin-title-label">📊 Évaluation & Rapport Théologique</span><p style="color: #f0ece0; font-size: 0.95rem; margin-top: 0.5rem; line-height: 1.7;">{rapport_html}</p></div>'
                         st.markdown(admin_box_html, unsafe_allow_html=True)
 
                         col1, col2 = st.columns(2)
                         with col1:
                             if st.button("✅ Approuver", key=f"approve_{index}"):
-                                if os.path.exists(doc['temp_path']):
-                                    # Récupération et stockage du nombre de fragments indexés
-                                    nb_fragments = add_to_collection(doc['temp_path'])
-                                    os.remove(doc['temp_path'])
-                                    st.session_state[
-                                        "admin_approval_msg"] = f"🎉 Le document '{doc['nom']}' a été validé et indexé avec succès ! (+{nb_fragments} fragments ajoutés)."
-                                else:
-                                    st.session_state[
-                                        "admin_approval_msg"] = f"🎉 Le document '{doc['nom']}' a été traité avec succès."
+                                try:
+                                    if os.path.exists(doc['temp_path']):
+                                        nb_fragments = add_to_collection(doc['temp_path'])
+                                        os.remove(doc['temp_path'])
+                                        st.session_state[
+                                            "admin_approval_msg"] = f"🎉 Le document '{doc['nom']}' a été validé et indexé avec succès ! (+{nb_fragments} fragments ajoutés)."
+                                    else:
+                                        st.session_state[
+                                            "admin_approval_msg"] = f"🎉 Le document '{doc['nom']}' a été traité avec succès."
 
-                                supprimer_document_attente(doc['nom'])
-                                st.rerun()
+                                    supprimer_document_attente(doc['nom'])
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(
+                                        f"❌ Erreur critique lors de l'indexation (Vérifiez le format ou les dimensions de la DB) : {str(e)}")
                         with col2:
                             if st.button("❌ Rejeter", key=f"reject_{index}"):
-                                if os.path.exists(doc['temp_path']):
-                                    os.remove(doc['temp_path'])
-                                supprimer_document_attente(doc['nom'])
-                                st.session_state[
-                                    "admin_approval_msg"] = f"❌ Le document '{doc['nom']}' a été rejeté et supprimé de la file d'attente."
-                                st.rerun()
+                                try:
+                                    if os.path.exists(doc['temp_path']):
+                                        os.remove(doc['temp_path'])
+                                    supprimer_document_attente(doc['nom'])
+                                    st.session_state[
+                                        "admin_approval_msg"] = f"❌ Le document '{doc['nom']}' a été rejeté et supprimé."
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Erreur lors de la suppression du rejet : {str(e)}")
 
                         st.markdown("<hr style='border-top: 1px dashed #1a2540; margin: 2rem 0;'>",
                                     unsafe_allow_html=True)
