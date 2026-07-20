@@ -3,6 +3,7 @@ import json
 import pickle
 import smtplib
 import threading
+import heapq
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pypdf import PdfReader
@@ -129,7 +130,7 @@ def expand_question(question):
 
 
 def retrieve_context(question):
-    # Dynamically pull the latest thread-safe chunks and bm25 index matrix
+    # 1. Dynamically pull the latest thread-safe chunks and bm25 index matrix
     current_chunks, current_bm25 = get_indices()
 
     if not current_chunks or current_bm25 is None:
@@ -138,22 +139,28 @@ def retrieve_context(question):
     expanded = expand_question(question)
     normalized_question = expanded.lower().strip()
 
+    # Helper to filter out text chunks starting with numeric noise (e.g., table of contents pages)
+    def isValidChunk(c):
+        return not c.strip().startswith(('1', '2', '3', '4', '5', '6', '7', '8', '9'))
+
+    # 2. Semantic Search (ChromaDB)
     vec_q = model.encode([normalized_question]).tolist()
     result = collection.query(query_embeddings=vec_q, n_results=10)
-    s_search = result["documents"][0]
-    s_search = [c for c in s_search if not c.strip().startswith(tuple("123456789"))]
+    s_search = [c for c in result["documents"][0] if isValidChunk(c)]
 
+    # 3. Lexical Search (BM25) - Optimized with HeapQ to prevent O(N log N) in-memory lists
     h_q = normalized_question.split()
     h_score = current_bm25.get_scores(h_q)
-    top_indices_score = sorted(range(len(h_score)), key=lambda k: h_score[k], reverse=True)[:10]
-    h_search = [current_chunks[i] for i in top_indices_score]
-    h_search = [c for c in h_search if not c.strip().startswith(tuple("123456789"))]
+    top_indices_score = heapq.nlargest(10, range(len(h_score)), key=lambda k: h_score[k])
+    h_search = [current_chunks[i] for i in top_indices_score if isValidChunk(current_chunks[i])]
 
-    combined = list(dict.fromkeys(s_search + h_search))[:20]
+    # 4. Hybrid Merge (Deduplicated maintaining ranking order hierarchy)
+    combined = list(dict.fromkeys(s_search + h_search))
 
+    # 5. Rule-Based Pre-Rerank Injections (Feeds choices into the CrossEncoder safely before scoring)
     if "différents types" in question.lower():
         expiable_chunks = [c for c in current_chunks if "expiable" in c.lower()][:3]
-        combined = list(dict.fromkeys(expiable_chunks + combined))[:20]
+        combined = list(dict.fromkeys(expiable_chunks + combined))
 
     if "souillures les plus graves" in question.lower():
         grave_chunks = [
@@ -161,20 +168,21 @@ def retrieve_context(question):
             if "souillure" in c.lower() and (
                     "sang" in c.lower() or "mort" in c.lower() or "nombre 19" in c.lower() or "purifi" in c.lower())
         ][:5]
-        combined = list(dict.fromkeys(grave_chunks + combined))[:20]
+        combined = list(dict.fromkeys(grave_chunks + combined))
 
-    pairs = [[question, chunk] for chunk in combined]
+    # Cap candidate pool to 20 before executing deep neural cross-attention matrix scoring
+    combined = combined[:20]
+
+    if not combined:
+        return ""
+
+    # 6. Cross-Encoder Reranking (Using full expanded string for better semantic evaluation context)
+    pairs = [[expanded, chunk] for chunk in combined]
     cross_scores = model_reranker.predict(pairs)
-    top_indice_cross = sorted(range(len(cross_scores)), key=lambda k: cross_scores[k], reverse=True)[:5]
-    final_chunks = [combined[i] for i in top_indice_cross]
 
-    if "souillures les plus graves" in question.lower():
-        grave_chunks = [
-            c for c in current_chunks
-            if "souillure" in c.lower() and (
-                    "sang" in c.lower() or "mort" in c.lower() or "nombre 19" in c.lower() or "purifi" in c.lower())
-        ][:3]
-        final_chunks = list(dict.fromkeys(grave_chunks + final_chunks))[:5]
+    # Safely select top 5 highest-relevance ranked chunks
+    top_indice_cross = heapq.nlargest(5, range(len(cross_scores)), key=lambda k: cross_scores[k])
+    final_chunks = [combined[i] for i in top_indice_cross]
 
     return "\n".join(final_chunks)
 
