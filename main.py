@@ -2,6 +2,7 @@ import os
 import json
 import pickle
 import smtplib
+import threading
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pypdf import PdfReader
@@ -20,15 +21,44 @@ load_dotenv()
 
 PENDING_DOCS_FILE = "documents_attente.json"
 
-# Charger les fichiers d'indexation
-with open("chunks_doctrine.pkl", "rb") as f:
-    chunks = pickle.load(f)
+# --- Thread-Safe Dynamic Index Manager ---
+_index_lock = threading.Lock()
+_last_loaded_time = 0.0
 
-with open("bm25_doctrine.pkl", "rb") as f:
-    bm25 = pickle.load(f)
+# Global caches that threads will safely read from
+chunks = []
+bm25 = None
 
+
+def get_indices():
+    """Safely retrieves or reloads chunks and BM25 matrix if files change on disk."""
+    global chunks, bm25, _last_loaded_time
+
+    chunks_path = "chunks_doctrine.pkl"
+    bm25_path = "bm25_doctrine.pkl"
+
+    if not os.path.exists(chunks_path) or not os.path.exists(bm25_path):
+        return chunks, bm25
+
+    current_mod_time = os.path.getmtime(chunks_path)
+
+    # Thread lock ensures two sessions don't read/write simultaneously
+    with _index_lock:
+        if bm25 is None or current_mod_time > _last_loaded_time:
+            with open(chunks_path, "rb") as f:
+                chunks = pickle.load(f)
+            with open(bm25_path, "rb") as f:
+                bm25 = pickle.load(f)
+            _last_loaded_time = current_mod_time
+
+    return chunks, bm25
+
+
+# Initialize core static models
 model = SentenceTransformer("distiluse-base-multilingual-cased-v2")
-model_reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+# FIXED: Swapped out English miniLM for a native French semantic reranker
+model_reranker = CrossEncoder("corintxo/msmarco-MiniLM-L6-v2-fr-reranker")
+
 db_client = chromadb.PersistentClient(path="./chroma_doctrine_db")
 collection = db_client.get_or_create_collection(name="bible_doctrine_v3")
 
@@ -99,6 +129,12 @@ def expand_question(question):
 
 
 def retrieve_context(question):
+    # Dynamically pull the latest thread-safe chunks and bm25 index matrix
+    current_chunks, current_bm25 = get_indices()
+
+    if not current_chunks or current_bm25 is None:
+        return ""
+
     expanded = expand_question(question)
     normalized_question = expanded.lower().strip()
 
@@ -108,22 +144,22 @@ def retrieve_context(question):
     s_search = [c for c in s_search if not c.strip().startswith(tuple("123456789"))]
 
     h_q = normalized_question.split()
-    h_score = bm25.get_scores(h_q)
+    h_score = current_bm25.get_scores(h_q)
     top_indices_score = sorted(range(len(h_score)), key=lambda k: h_score[k], reverse=True)[:10]
-    h_search = [chunks[i] for i in top_indices_score]
+    h_search = [current_chunks[i] for i in top_indices_score]
     h_search = [c for c in h_search if not c.strip().startswith(tuple("123456789"))]
 
     combined = list(dict.fromkeys(s_search + h_search))[:20]
 
     if "différents types" in question.lower():
-        expiable_chunks = [c for c in chunks if "expiable" in c.lower()][:3]
+        expiable_chunks = [c for c in current_chunks if "expiable" in c.lower()][:3]
         combined = list(dict.fromkeys(expiable_chunks + combined))[:20]
 
     if "souillures les plus graves" in question.lower():
         grave_chunks = [
-            c for c in chunks
+            c for c in current_chunks
             if "souillure" in c.lower() and (
-                        "sang" in c.lower() or "mort" in c.lower() or "nombre 19" in c.lower() or "purifi" in c.lower())
+                    "sang" in c.lower() or "mort" in c.lower() or "nombre 19" in c.lower() or "purifi" in c.lower())
         ][:5]
         combined = list(dict.fromkeys(grave_chunks + combined))[:20]
 
@@ -134,9 +170,9 @@ def retrieve_context(question):
 
     if "souillures les plus graves" in question.lower():
         grave_chunks = [
-            c for c in chunks
+            c for c in current_chunks
             if "souillure" in c.lower() and (
-                        "sang" in c.lower() or "mort" in c.lower() or "nombre 19" in c.lower() or "purifi" in c.lower())
+                    "sang" in c.lower() or "mort" in c.lower() or "nombre 19" in c.lower() or "purifi" in c.lower())
         ][:3]
         final_chunks = list(dict.fromkeys(grave_chunks + final_chunks))[:5]
 
@@ -237,7 +273,7 @@ def validate_document(path):
         try:
             ext_claims = extract_claims(text)
         except Exception as e:
-            return f"⚠️ Erreur lors de l'extraction des affirmations : {str(e)}"
+            return f"⚠️ Erreur lors du extraction des affirmations : {str(e)}"
 
         claims_list = []
         for line in ext_claims.split("\n"):
@@ -315,7 +351,9 @@ def send_notification_email(document_name, validation_report):
 
 
 def add_to_collection(path):
-    global chunks, bm25
+    # Retrieve current active indices within thread lock context
+    current_chunks, _ = get_indices()
+
     newdoc = PdfReader(path)
     text_parts = []
     for page in newdoc.pages:
@@ -331,7 +369,7 @@ def add_to_collection(path):
         if len(chunk) > 50:
             new_chunks.append(chunk)
 
-    start_id = len(chunks)
+    start_id = len(current_chunks)
     new_ids = [f"id_{start_id + i}" for i in range(len(new_chunks))]
 
     batch_size = 256
@@ -341,13 +379,19 @@ def add_to_collection(path):
         batch_embeddings = model.encode(batch_chunks).tolist()
         collection.add(embeddings=batch_embeddings, ids=batch_ids, documents=batch_chunks)
 
-    chunks.extend(new_chunks)
-    tokenized_chunks = [chunk.lower().split() for chunk in chunks]
-    bm25 = BM25Okapi(tokenized_chunks)
+    # Use the isolated thread lock to cleanly update files on disk
+    with _index_lock:
+        # Re-read fresh right before extending to avoid dropping mid-flight edits from other sessions
+        with open("chunks_doctrine.pkl", "rb") as f:
+            fresh_chunks = pickle.load(f)
 
-    with open("chunks_doctrine.pkl", "wb") as pkl_file:
-        pickle.dump(chunks, pkl_file)
-    with open("bm25_doctrine.pkl", "wb") as pkl_file:
-        pickle.dump(bm25, pkl_file)
+        fresh_chunks.extend(new_chunks)
+        tokenized_chunks = [chunk.lower().split() for chunk in fresh_chunks]
+        new_bm25 = BM25Okapi(tokenized_chunks)
+
+        with open("chunks_doctrine.pkl", "wb") as pkl_file:
+            pickle.dump(fresh_chunks, pkl_file)
+        with open("bm25_doctrine.pkl", "wb") as pkl_file:
+            pickle.dump(new_bm25, pkl_file)
 
     return len(new_chunks)
