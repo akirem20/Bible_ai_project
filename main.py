@@ -58,8 +58,8 @@ def get_indices():
 # Initialize core static models
 model = SentenceTransformer("distiluse-base-multilingual-cased-v2")
 # FIXED: Swapped out English miniLM for a native French semantic reranker
-# SWAPPED: Replaced missing repository with a premium native French semantic reranker
-model_reranker = CrossEncoder("antoinelouis/cross-encoder-camembert-base-msmarco-fr")
+# FIXED: Official multilingual MS MARCO reranker guaranteed to have the correct config files
+model_reranker = CrossEncoder("cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")
 
 db_client = chromadb.PersistentClient(path="./chroma_doctrine_db")
 collection = db_client.get_or_create_collection(name="bible_doctrine_v3")
